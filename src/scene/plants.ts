@@ -16,6 +16,8 @@ const DECOR_KINDS = ['WickerVase', 'BushPlant', 'DeskPlant'] as const;
 export type DecorKind = (typeof DECOR_KINDS)[number];
 const DESK_KINDS = ['OgiM', 'OgiY'] as const;
 export type DeskKind = (typeof DESK_KINDS)[number];
+const CHAIR_KINDS = ['Renya', 'Sava', 'Roundish'] as const;
+export type ChairKind = (typeof CHAIR_KINDS)[number];
 
 /** Material name in the GLB → palette slot, so the plants follow day/night like the rest of the room. */
 const SLOTS: Record<string, keyof ScenePalette> = {
@@ -56,6 +58,8 @@ export const loadPlants = () => loadNodes('plants.glb', PLANT_KINDS);
 export const loadDecor = () => loadNodes('decor.glb', DECOR_KINDS);
 /** Ogi desks (user-supplied .blend files, converted): 2.0 × 0.8 m, top at 0.74 m, centred on the top. */
 export const loadDesks = () => loadNodes('desks.glb', DESK_KINDS);
+/** Chairs (user-supplied .blend / .fbx, converted): real size, facing +z, centred, on y = 0. */
+export const loadChairs = () => loadNodes('chairs.glb', CHAIR_KINDS);
 
 /** A themed copy of one plant, `height` tall, with materials taken from the shared palette set. */
 export function placePlant(

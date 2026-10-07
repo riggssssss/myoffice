@@ -201,7 +201,7 @@ export class TotoroAvatar {
   goTo(spot: Spot, instant: boolean): void {
     // Same seat at the same place: nothing to do. A moved desk keeps its key but not its place.
     const cur = this.spot;
-    if (cur && cur.key === spot.key && Math.abs(cur.x - spot.x) < 1e-3 && Math.abs(cur.z - spot.z) < 1e-3 && Math.abs(cur.rotY - spot.rotY) < 1e-3) return;
+    if (cur && cur.key === spot.key && Math.abs(cur.x - spot.x) < 1e-3 && Math.abs(cur.z - spot.z) < 1e-3 && Math.abs(cur.rotY - spot.rotY) < 1e-3 && (cur.lift ?? 0) === (spot.lift ?? 0)) return;
     this.spot = spot;
     if (instant) {
       this.path = [];
@@ -321,7 +321,8 @@ export class TotoroAvatar {
   }
 
   private still(pose: Pose): Motion {
-    return { lift: SEAT_Y[pose], squash: pose === 'stand' ? 1 : 0.94, leanX: 0, roll: 0, turn: 0, mug: false, arms: 0 };
+    const lift = SEAT_Y[pose] + (pose === 'stand' ? 0 : (this.spot?.lift ?? 0));
+    return { lift, squash: pose === 'stand' ? 1 : 0.94, leanX: 0, roll: 0, turn: 0, mug: false, arms: 0 };
   }
 
   /** Bouncy waddle: hop on every step, squash on landing, rock side to side. */

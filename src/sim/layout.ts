@@ -128,6 +128,80 @@ export const WALLS: { id: WallKind; label: string }[] = [
   { id: 'stripes', label: 'Papel a rayas' },
 ];
 
+/** Chairs come in two packs: every desk chair alike, every meeting chair alike. */
+export type ChairModel = 'classic' | 'renya' | 'sava' | 'roundish';
+export type ChairPack = 'desk' | 'meeting';
+export interface ChairStyle {
+  model: ChairModel;
+  /** Upholstery colour id (see CHAIR_FABRICS). */
+  fabric: string;
+  /** Frame / base colour id; the options depend on the model (see CHAIR_FRAMES). */
+  frame: string;
+}
+
+export const CHAIR_MODELS: { id: ChairModel; label: string; note: string; seatTop: number }[] = [
+  { id: 'classic', label: 'Clásica', note: 'La de siempre', seatTop: 0.485 },
+  { id: 'renya', label: 'Renya', note: 'Silla de oficina tapizada', seatTop: 0.533 },
+  { id: 'sava', label: 'Sava', note: 'Silla de oficina con respaldo de malla y cabecero', seatTop: 0.533 },
+  { id: 'roundish', label: 'Roundish', note: 'Butaca redondeada con estructura de madera', seatTop: 0.417 },
+];
+
+export const CHAIR_FABRICS: { id: string; label: string; color: string }[] = [
+  { id: 'theme', label: 'Gris oscuro (la de siempre)', color: '#3c3833' },
+  { id: 'navy', label: 'Azul marino', color: '#2b3a6b' },
+  { id: 'graphite', label: 'Grafito', color: '#3b3b3e' },
+  { id: 'stone', label: 'Gris piedra', color: '#b5b1aa' },
+  { id: 'sand', label: 'Arena', color: '#d6c4a4' },
+  { id: 'terracotta', label: 'Terracota', color: '#b5603e' },
+  { id: 'mustard', label: 'Mostaza', color: '#c8952f' },
+  { id: 'olive', label: 'Verde oliva', color: '#6b7148' },
+  { id: 'sage', label: 'Verde salvia', color: '#9aab93' },
+  { id: 'blush', label: 'Rosa palo', color: '#d6a7a1' },
+  { id: 'burgundy', label: 'Burdeos', color: '#6d2a35' },
+];
+
+export const CHAIR_FRAMES: Record<ChairModel, { id: string; label: string; color: string }[]> = {
+  classic: [
+    { id: 'theme', label: 'Gris (la de siempre)', color: '#8a847a' },
+    { id: 'black', label: 'Negro', color: '#1f1f1f' },
+    { id: 'white', label: 'Blanco', color: '#e9e7e2' },
+    { id: 'alu', label: 'Aluminio', color: '#b4b7ba' },
+  ],
+  renya: [
+    { id: 'black', label: 'Negro', color: '#1c1c1c' },
+    { id: 'grey', label: 'Gris', color: '#8b8d90' },
+    { id: 'white', label: 'Blanco', color: '#e9e7e2' },
+  ],
+  sava: [
+    { id: 'black', label: 'Negro', color: '#1c1c1c' },
+    { id: 'grey', label: 'Gris', color: '#8b8d90' },
+    { id: 'white', label: 'Blanco', color: '#e9e7e2' },
+  ],
+  roundish: [
+    { id: 'walnut', label: 'Nogal', color: '#6b4a32' },
+    { id: 'oak', label: 'Roble', color: '#b98b5a' },
+    { id: 'black', label: 'Madera negra', color: '#262423' },
+  ],
+};
+
+/** What each model looks like when first picked. */
+export const CHAIR_DEFAULTS: Record<ChairModel, ChairStyle> = {
+  classic: { model: 'classic', fabric: 'theme', frame: 'theme' },
+  renya: { model: 'renya', fabric: 'navy', frame: 'black' },
+  sava: { model: 'sava', fabric: 'navy', frame: 'black' },
+  roundish: { model: 'roundish', fabric: 'sand', frame: 'walnut' },
+};
+
+/** Keep a style valid for its model (a frame from another model falls back to the default). */
+export function chairStyleFor(s: ChairStyle): ChairStyle {
+  const frames = CHAIR_FRAMES[s.model];
+  return {
+    model: s.model,
+    fabric: CHAIR_FABRICS.some((f) => f.id === s.fabric) ? s.fabric : CHAIR_DEFAULTS[s.model].fabric,
+    frame: frames.some((f) => f.id === s.frame) ? s.frame : CHAIR_DEFAULTS[s.model].frame,
+  };
+}
+
 /** The office as it has always looked. */
 export const DEFAULT_DESK_STYLE: DeskStyle = { model: 'classic', top: 'theme', frame: 'theme' };
 
@@ -326,6 +400,7 @@ interface Saved {
   deskStyle: DeskStyle;
   floor: FloorKind;
   walls: WallKind;
+  chairs: Record<ChairPack, ChairStyle>;
 }
 
 /** What undo restores. */
@@ -334,7 +409,13 @@ export interface LayoutSnapshot {
   deskStyle: DeskStyle;
   floor: FloorKind;
   walls: WallKind;
+  chairs: Record<ChairPack, ChairStyle>;
 }
+
+const defaultChairs = (): Record<ChairPack, ChairStyle> => ({
+  desk: { ...CHAIR_DEFAULTS.classic },
+  meeting: { ...CHAIR_DEFAULTS.classic },
+});
 
 function load(): Saved {
   try {
@@ -346,6 +427,12 @@ function load(): Saved {
         s.deskStyle = { ...DEFAULT_DESK_STYLE, ...s.deskStyle };
         if (!FLOORS.some((f) => f.id === s.floor)) s.floor = 'plain';
         if (!WALLS.some((w) => w.id === s.walls)) s.walls = 'plain';
+        const chairs = defaultChairs();
+        for (const pack of ['desk', 'meeting'] as const) {
+          const c = s.chairs?.[pack];
+          if (c && CHAIR_MODELS.some((m) => m.id === c.model)) chairs[pack] = chairStyleFor(c);
+        }
+        s.chairs = chairs;
         return s;
       }
     }
@@ -357,7 +444,7 @@ function load(): Saved {
 
 function fresh(): Saved {
   const items = seedItems();
-  return { version: VERSION, items, nextId: items.length + 1, deskStyle: { ...DEFAULT_DESK_STYLE }, floor: 'plain', walls: 'plain' };
+  return { version: VERSION, items, nextId: items.length + 1, deskStyle: { ...DEFAULT_DESK_STYLE }, floor: 'plain', walls: 'plain', chairs: defaultChairs() };
 }
 
 let saved = load();
@@ -379,6 +466,7 @@ export const layoutItems = (): readonly Item[] => saved.items;
 export const deskStyle = (): Readonly<DeskStyle> => saved.deskStyle;
 export const floorKind = (): FloorKind => saved.floor;
 export const wallKind = (): WallKind => saved.walls;
+export const chairStyle = (pack: ChairPack): Readonly<ChairStyle> => saved.chairs[pack];
 export const layoutRevision = () => revision;
 export const layoutItem = (id: string | null) => (id ? saved.items.find((i) => i.id === id) : undefined);
 export const deskBySlot = (slot: number) => saved.items.find((i) => i.kind === 'desk' && i.slot === slot);
@@ -442,6 +530,14 @@ export function setFloor(floor: FloorKind): void {
   changed();
 }
 
+/** Restyle a whole pack. Switching model starts from that model's own defaults. */
+export function setChairStyle(pack: ChairPack, patch: Partial<ChairStyle>): void {
+  const cur = saved.chairs[pack];
+  const next = patch.model && patch.model !== cur.model ? { ...CHAIR_DEFAULTS[patch.model], ...patch } : { ...cur, ...patch };
+  saved.chairs = { ...saved.chairs, [pack]: chairStyleFor(next) };
+  changed();
+}
+
 export function setWalls(walls: WallKind): void {
   saved.walls = walls;
   changed();
@@ -453,6 +549,7 @@ export function restoreLayout(snap: LayoutSnapshot): void {
   saved.deskStyle = { ...snap.deskStyle };
   saved.floor = snap.floor;
   saved.walls = snap.walls;
+  saved.chairs = { desk: { ...snap.chairs.desk }, meeting: { ...snap.chairs.meeting } };
   changed();
 }
 
@@ -461,6 +558,7 @@ export const snapshotLayout = (): LayoutSnapshot => ({
   deskStyle: { ...saved.deskStyle },
   floor: saved.floor,
   walls: saved.walls,
+  chairs: { desk: { ...saved.chairs.desk }, meeting: { ...saved.chairs.meeting } },
 });
 
 export function resetLayout(): void {

@@ -1,4 +1,4 @@
-import { corners, deskBySlot, FLOOR, KINDS, layoutItems, layoutRevision, toWorld, type Item, type P } from '../sim/layout';
+import { CHAIR_MODELS, chairStyle, corners, deskBySlot, FLOOR, KINDS, layoutItems, layoutRevision, toWorld, type ChairPack, type Item, type P } from '../sim/layout';
 import type { Activity, Worker } from '../sim/types';
 
 export { FLOOR };
@@ -13,7 +13,13 @@ export interface Spot {
   z: number;
   rotY: number;
   pose: Pose;
+  /** Seats only: how much higher (or lower) the seat is than the classic chair's. */
+  lift?: number;
 }
+
+/** Seat height of the chosen chair, relative to the classic chair the poses were made for. */
+const CLASSIC_SEAT = CHAIR_MODELS[0].seatTop;
+const seatLift = (pack: ChairPack) => CHAIR_MODELS.find((m) => m.id === chairStyle(pack).model)!.seatTop - CLASSIC_SEAT;
 
 export type Point = P;
 
@@ -21,7 +27,8 @@ export type Point = P;
 
 /** Where the chair sits, in a desk's own frame (desk faces +z). */
 export const DESK_SEAT = { x: 0, z: -1.25 };
-export const DESK_STOOL = { x: 0.85, z: -1.25 };
+/** A visitor helping at someone's desk stands here, beside the chair. */
+export const DESK_GUEST = { x: 0.8, z: -1.15 };
 /** Coffee queue, in the counter's frame (counter faces -z, toward the room). */
 const COFFEE_QUEUE = (i: number) => ({ x: -1.05 + (i % 3) * 1.05, z: -1.0 - Math.floor(i / 3) * 0.9 });
 
@@ -37,12 +44,12 @@ const middle = (key: string): Spot => ({ key, x: 0, z: 0, rotY: 0, pose: 'stand'
 
 export function deskSeat(slot: number): Spot {
   const d = deskBySlot(slot);
-  return d ? itemSpot(d, `seat-${slot}`, DESK_SEAT.x, DESK_SEAT.z, 0, 'seat') : middle(`seat-${slot}`);
+  return d ? { ...itemSpot(d, `seat-${slot}`, DESK_SEAT.x, DESK_SEAT.z, 0, 'seat'), lift: seatLift('desk') } : middle(`seat-${slot}`);
 }
 
-export function deskStool(slot: number): Spot {
+export function deskGuest(slot: number): Spot {
   const d = deskBySlot(slot);
-  return d ? itemSpot(d, `stool-${slot}`, DESK_STOOL.x, DESK_STOOL.z, -0.35, 'stool') : middle(`stool-${slot}`);
+  return d ? itemSpot(d, `guest-${slot}`, DESK_GUEST.x, DESK_GUEST.z, -0.45, 'stand') : middle(`guest-${slot}`);
 }
 
 /** Chair positions around the meeting table, in its own frame. */
@@ -57,7 +64,7 @@ export function meetingSeat(i: number): Spot {
   const t = unique('meeting');
   if (!t) return middle(`meet-${i}`);
   const c = meetingChair(i % MEETING_SEATS);
-  return itemSpot(t, `meet-${i}`, c.x, c.z, c.rot, 'seat');
+  return { ...itemSpot(t, `meet-${i}`, c.x, c.z, c.rot, 'seat'), lift: seatLift('meeting') };
 }
 
 export function coffeeSpot(i: number): Spot {
@@ -74,7 +81,7 @@ export function spotFor(w: Worker, index: number, all: Worker[]): Spot {
   if (a === 'coffee') return coffeeSpot(index);
   if (a === 'pairing' && w.pairWith) {
     const partner = all.find((o) => o.id === w.pairWith);
-    if (partner) return deskStool(partner.desk);
+    if (partner) return deskGuest(partner.desk);
   }
   return deskSeat(w.desk);
 }

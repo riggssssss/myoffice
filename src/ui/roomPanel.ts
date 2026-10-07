@@ -1,4 +1,8 @@
 import {
+  CHAIR_FABRICS,
+  CHAIR_FRAMES,
+  CHAIR_MODELS,
+  chairStyle,
   DESK_DECOR,
   DESK_FRAMES,
   DESK_MODELS,
@@ -13,6 +17,8 @@ import {
   layoutItem,
   layoutItems,
   type Category,
+  type ChairPack,
+  type ChairStyle,
   type DeskDecor,
   type DeskStyle,
   type FloorKind,
@@ -35,6 +41,7 @@ import {
   rotateItem,
   setDecor,
   floorFinish,
+  styleChairs,
   styleDesks,
   wallFinish,
 } from './roomState';
@@ -134,6 +141,52 @@ function deskLook(): string {
     </section>`;
 }
 
+/** One chair pack: model, then upholstery and frame colours for that model. */
+function chairPack(pack: ChairPack, title: string): string {
+  const c = chairStyle(pack);
+  const fabric = CHAIR_FABRICS.filter((f) => f.id !== 'theme' || c.model === 'classic');
+  const frames = CHAIR_FRAMES[c.model];
+  const sw = (key: 'fabric' | 'frame', list: { id: string; label: string; color: string }[]) =>
+    `<div class="swatches" role="group">${list
+      .map(
+        (o) =>
+          `<button type="button" class="swatch" style="--swatch:${o.color}" data-chair="${pack}" data-chair-key="${key}" data-value="${o.id}" data-key="ch-${pack}-${key}-${o.id}" aria-pressed="${
+            c[key] === o.id
+          }" aria-label="${esc(o.label)}" title="${esc(o.label)}"></button>`,
+      )
+      .join('')}</div>`;
+  return `
+    <div class="room-pack">
+      <h4 class="room-pack-title">${title}</h4>
+      <div class="chips" role="group" aria-label="Modelo de silla">
+        ${CHAIR_MODELS.map(
+          (mdl) =>
+            `<button type="button" class="chip" data-chair="${pack}" data-chair-key="model" data-value="${mdl.id}" data-key="ch-${pack}-model-${mdl.id}" aria-pressed="${
+              c.model === mdl.id
+            }" title="${esc(mdl.note)}">${mdl.label}</button>`,
+        ).join('')}
+      </div>
+      <fieldset class="room-field">
+        <legend>Tapizado · ${esc(CHAIR_FABRICS.find((f) => f.id === c.fabric)!.label)}</legend>
+        ${sw('fabric', fabric)}
+      </fieldset>
+      <fieldset class="room-field">
+        <legend>${c.model === 'roundish' ? 'Madera' : 'Estructura'} · ${esc(frames.find((f) => f.id === c.frame)!.label)}</legend>
+        ${sw('frame', frames)}
+      </fieldset>
+    </div>`;
+}
+
+function chairPicker(): string {
+  return `
+    <section class="section" aria-labelledby="room-chairs-title">
+      <h3 class="section-title" id="room-chairs-title">Sillas</h3>
+      <p class="section-note">Cada grupo cambia entero: todas las de los puestos o todas las de reuniones.</p>
+      ${chairPack('desk', 'Puestos de trabajo')}
+      ${chairPack('meeting', 'Mesa de reuniones')}
+    </section>`;
+}
+
 /** Floor finish for the whole room, picked from real previews of each texture. */
 function floorPicker(): string {
   const current = floorKind();
@@ -211,6 +264,7 @@ export function renderRoom(): string {
         <p class="room-msg ${msg ? 'is-shown' : ''}" role="status" aria-live="polite">${msg ? `${icon.alert(14)}${esc(msg)}` : ''}</p>
       </section>
       ${deskLook()}
+      ${chairPicker()}
       ${floorPicker()}
       ${wallPicker()}
       <section class="section" aria-label="Añadir objetos">
@@ -234,6 +288,8 @@ export function bindRoom(el: HTMLElement, near: () => P): void {
     const id = editSelection();
     const add = t.closest<HTMLElement>('[data-add]');
     if (add) return addKind(add.dataset.add as ItemKind, near());
+    const ch = t.closest<HTMLElement>('[data-chair]');
+    if (ch) return styleChairs(ch.dataset.chair as ChairPack, { [ch.dataset.chairKey as keyof ChairStyle]: ch.dataset.value } as Partial<ChairStyle>);
     const wl = t.closest<HTMLElement>('[data-wall]');
     if (wl) return wallFinish(wl.dataset.wall as WallKind);
     const fl = t.closest<HTMLElement>('[data-floor]');

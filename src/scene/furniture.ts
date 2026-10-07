@@ -1,15 +1,16 @@
 import * as THREE from 'three';
 import { ROLES, ROLE_ORDER } from '../sim/seed';
-import type { DeskStyle, Item } from '../sim/layout';
+import { CHAIR_FABRICS, CHAIR_FRAMES, type ChairPack, type ChairStyle, type DeskStyle, type Item } from '../sim/layout';
 import { placeComputer } from './computer';
-import { DESK_SEAT, DESK_STOOL, MEETING_SEATS, meetingChair } from './navigation';
+import { DESK_SEAT, MEETING_SEATS, meetingChair } from './navigation';
 import type { ScenePalette } from './palette';
-import { placePlant, type DecorKind, type DeskKind, type PlantKind } from './plants';
+import { placePlant, type ChairKind, type DecorKind, type DeskKind, type PlantKind } from './plants';
 
 /** Models that arrive after start-up; until then each object shows a simple stand-in. */
 export interface Assets {
   computer: THREE.Object3D | null;
   desks: Map<DeskKind, THREE.Object3D> | null;
+  chairs: Map<ChairKind, THREE.Object3D> | null;
   plants: Map<PlantKind, THREE.Object3D> | null;
   decor: Map<DecorKind, THREE.Object3D> | null;
 }
@@ -151,15 +152,83 @@ function placeOgi(template: THREE.Object3D, style: DeskStyle, m: MatFn): THREE.O
   return desk;
 }
 
-export function buildItem(item: Item, m: MatFn, assets: Assets, style: DeskStyle): Built {
+// ---------------------------------------------------------------- chairs
+
+const CHAIR_NODE: Record<Exclude<ChairStyle['model'], 'classic'>, ChairKind> = { renya: 'Renya', sava: 'Sava', roundish: 'Roundish' };
+
+function fabricMaterial(c: ChairStyle, m: MatFn): THREE.Material {
+  if (c.fabric === 'theme') return m('chair');
+  const color = CHAIR_FABRICS.find((f) => f.id === c.fabric)!.color;
+  return finish(`fabric:${c.fabric}`, () => ({ color, roughness: 0.95, side: THREE.DoubleSide }));
+}
+
+function chairFrame(c: ChairStyle, m: MatFn): THREE.Material {
+  if (c.frame === 'theme') return m('metal');
+  const color = CHAIR_FRAMES[c.model].find((f) => f.id === c.frame)!.color;
+  const wood = c.model === 'roundish';
+  return finish(`chairframe:${c.model}:${c.frame}`, () => ({
+    color,
+    roughness: wood ? 0.6 : 0.5,
+    metalness: wood ? 0 : 0.15,
+    side: THREE.DoubleSide,
+  }));
+}
+
+/**
+ * One chair of a pack, facing +z, centred on its seat, standing on y = 0.
+ * The classic chair is the original block chair (bigger at desks, lighter at the table).
+ */
+function placeChair(c: ChairStyle, pack: ChairPack, m: MatFn, assets: Assets): THREE.Group {
+  const g = new THREE.Group();
+  const fabric = fabricMaterial(c, m);
+  const frame = chairFrame(c, m);
+  const template = c.model === 'classic' ? undefined : assets.chairs?.get(CHAIR_NODE[c.model]);
+  if (template) {
+    const chair = template.clone(true);
+    // Mesh back of the Sava: a shade off the frame so it reads as a separate material.
+    const mesh = c.model === 'sava' ? finish(`chairmesh:${c.frame}`, () => ({
+      color: new THREE.Color(CHAIR_FRAMES.sava.find((f) => f.id === c.frame)!.color).multiplyScalar(c.frame === 'white' ? 0.85 : 1.6),
+      roughness: 0.9,
+      side: THREE.DoubleSide,
+    })) : frame;
+    const steel = finish('chair:steel', () => ({ color: '#9a9ca0', roughness: 0.35, metalness: 0.6 }));
+    chair.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const name = (o.material as THREE.Material).name;
+      o.material = name === 'fabric' ? fabric : name === 'mesh' ? mesh : name === 'metal' ? steel : frame;
+    });
+    chair.position.set(0, 0, 0);
+    g.add(chair);
+    return g;
+  }
+  if (pack === 'desk') {
+    g.add(box(0.52, 0.07, 0.5, fabric, 0, 0.45, 0));
+    g.add(box(0.52, 0.5, 0.06, fabric, 0, 0.76, -0.25));
+    g.add(cyl(0.03, 0.03, 0.4, frame, 0, 0.22, 0, 8));
+    g.add(cyl(0.24, 0.24, 0.03, frame, 0, 0.02, 0, 16));
+  } else {
+    g.add(box(0.42, 0.06, 0.42, fabric, 0, 0.45, 0));
+    g.add(box(0.42, 0.42, 0.05, fabric, 0, 0.72, -0.21));
+    g.add(cyl(0.03, 0.03, 0.4, frame, 0, 0.22, 0, 8));
+  }
+  return g;
+}
+
+export interface RoomLook {
+  desk: DeskStyle;
+  chairs: Record<ChairPack, ChairStyle>;
+}
+
+export function buildItem(item: Item, m: MatFn, assets: Assets, look: RoomLook): Built {
+  const style = look.desk;
   const g = new THREE.Group();
   const out: Built = { obj: g };
   switch (item.kind) {
     case 'desk':
-      buildDesk(g, item, m, assets, out, style);
+      buildDesk(g, item, m, assets, out, style, look.chairs.desk);
       break;
     case 'meeting':
-      buildMeeting(g, m);
+      buildMeeting(g, m, assets, look.chairs.meeting);
       break;
     case 'coffee':
       buildCoffee(g, m, assets);
@@ -179,7 +248,7 @@ export function buildItem(item: Item, m: MatFn, assets: Assets, style: DeskStyle
   return out;
 }
 
-function buildDesk(g: THREE.Group, item: Item, m: MatFn, assets: Assets, out: Built, style: DeskStyle): void {
+function buildDesk(g: THREE.Group, item: Item, m: MatFn, assets: Assets, out: Built, style: DeskStyle, chairStyle: ChairStyle): void {
   const model = style.model === 'ogiM' ? 'OgiM' : style.model === 'ogiY' ? 'OgiY' : null;
   const template = model ? assets.desks?.get(model) : undefined;
   if (template) {
@@ -233,20 +302,13 @@ function buildDesk(g: THREE.Group, item: Item, m: MatFn, assets: Assets, out: Bu
     g.add(plant);
   }
 
-  // Chair + spare stool for pairing.
-  const chair = new THREE.Group();
+  // The worker's chair (no spare seat: a visitor stands beside it).
+  const chair = placeChair(chairStyle, 'desk', m, assets);
   chair.position.set(DESK_SEAT.x, 0, DESK_SEAT.z);
-  chair.add(box(0.52, 0.07, 0.5, m('chair'), 0, 0.45, 0));
-  chair.add(box(0.52, 0.5, 0.06, m('chair'), 0, 0.76, -0.25));
-  chair.add(cyl(0.03, 0.03, 0.4, m('metal'), 0, 0.22, 0, 8));
-  chair.add(cyl(0.24, 0.24, 0.03, m('metal'), 0, 0.02, 0, 16));
   g.add(chair);
-
-  g.add(cyl(0.19, 0.19, 0.06, m('woodDark'), DESK_STOOL.x, 0.44, DESK_STOOL.z, 18));
-  g.add(cyl(0.03, 0.03, 0.42, m('metal'), DESK_STOOL.x, 0.21, DESK_STOOL.z, 8));
 }
 
-function buildMeeting(g: THREE.Group, m: MatFn): void {
+function buildMeeting(g: THREE.Group, m: MatFn, assets: Assets, chairStyle: ChairStyle): void {
   const rug = cyl(2.3, 2.3, 0.02, m('rug'), 0, 0.01, 0, 48);
   rug.castShadow = false;
   g.add(rug);
@@ -255,12 +317,9 @@ function buildMeeting(g: THREE.Group, m: MatFn): void {
   g.add(cyl(0.4, 0.4, 0.03, m('metal'), 0, 0.02, 0, 24));
   for (let i = 0; i < MEETING_SEATS; i++) {
     const s = meetingChair(i);
-    const chair = new THREE.Group();
+    const chair = placeChair(chairStyle, 'meeting', m, assets);
     chair.position.set(s.x, 0, s.z);
     chair.rotation.y = s.rot;
-    chair.add(box(0.42, 0.06, 0.42, m('chair'), 0, 0.45, 0));
-    chair.add(box(0.42, 0.42, 0.05, m('chair'), 0, 0.72, -0.21));
-    chair.add(cyl(0.03, 0.03, 0.4, m('metal'), 0, 0.22, 0, 8));
     g.add(chair);
   }
 }

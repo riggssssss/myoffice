@@ -614,7 +614,7 @@ export class Avatar {
   goTo(spot: Spot, instant: boolean): void {
     // Same seat at the same place: nothing to do. A moved desk keeps its key but not its place.
     const cur = this.spot;
-    if (cur && cur.key === spot.key && Math.abs(cur.x - spot.x) < 1e-3 && Math.abs(cur.z - spot.z) < 1e-3 && Math.abs(cur.rotY - spot.rotY) < 1e-3) return;
+    if (cur && cur.key === spot.key && Math.abs(cur.x - spot.x) < 1e-3 && Math.abs(cur.z - spot.z) < 1e-3 && Math.abs(cur.rotY - spot.rotY) < 1e-3 && (cur.lift ?? 0) === (spot.lift ?? 0)) return;
     this.spot = spot;
     if (instant) {
       this.path = [];
@@ -728,7 +728,8 @@ export class Avatar {
   private base(pose: Pose): PoseTarget {
     const seated = pose !== 'stand';
     return {
-      pelvisY: POSE_Y[pose],
+      // Taller or lower chairs lift or drop the seated pose to their seat.
+      pelvisY: POSE_Y[pose] + (seated ? (this.spot?.lift ?? 0) : 0),
       hipL: seated ? -1.5 : 0,
       hipR: seated ? -1.5 : 0,
       kneeL: seated ? 1.45 : 0.03,

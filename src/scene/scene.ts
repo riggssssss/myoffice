@@ -8,13 +8,13 @@ import { TotoroAvatar, totoroTemplate } from './totoro';
 
 type Figure = Avatar | TotoroAvatar;
 type SimWorker = SimState['workers'][number];
-import { deskStyle, floorKind, layoutItems, layoutRevision, wallKind } from '../sim/layout';
+import { chairStyle, deskStyle, floorKind, layoutItems, layoutRevision, wallKind } from '../sim/layout';
 import { isEditing } from '../ui/roomState';
 import { Labels } from './labels';
 import { Links } from './links';
 import { spotFor } from './navigation';
 import { loadComputer } from './computer';
-import { loadDecor, loadDesks, loadPlants } from './plants';
+import { loadChairs, loadDecor, loadDesks, loadPlants } from './plants';
 import { Office } from './office';
 import { DARK, LIGHT, Materials, type ScenePalette } from './palette';
 import { RoomEditor } from './roomEditor';
@@ -102,6 +102,9 @@ export class OfficeScene {
     loadComputer()
       .then((t) => this.office.setAsset('computer', t))
       .catch((e) => console.warn('iMac model failed to load; keeping placeholder monitors.', e));
+    loadChairs()
+      .then((t) => this.office.setAsset('chairs', t))
+      .catch((e) => console.warn('Chair models failed to load; chairs show as the classic one.', e));
     loadDesks()
       .then((t) => this.office.setAsset('desks', t))
       .catch((e) => console.warn('Desk models failed to load; Ogi desks show as the classic one.', e));
@@ -195,7 +198,7 @@ export class OfficeScene {
     const key = `${layoutRevision()}|${this.office.assetsVersion}`;
     if (key === this.builtFor) return;
     this.builtFor = key;
-    this.office.sync(layoutItems(), deskStyle());
+    this.office.sync(layoutItems(), { desk: deskStyle(), chairs: { desk: chairStyle('desk'), meeting: chairStyle('meeting') } });
     this.office.setFloor(floorKind());
     this.office.setWalls(wallKind());
   }
@@ -215,7 +218,9 @@ export class OfficeScene {
       a.update(dt, time, w.activity, w.role, walkMul);
       const p = a.root.position;
       // Guests sit right next to their host: lift their tag so the two don't overlap.
-      this.labels.place(w.id, p.x, a.headTop + (a.pose === 'stool' ? 1.15 : 0.28), p.z);
+      // A guest helping at someone's desk stands right beside them: lift the guest's tag clear.
+      const guest = w.activity === 'pairing' && !a.walking;
+      this.labels.place(w.id, p.x, a.headTop + (guest ? 0.75 : 0.28), p.z);
     });
     this.first = false;
 

@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { FLOOR, WINDOWS, type DeskStyle, type FloorKind, type Item, type WallKind } from '../sim/layout';
+import { FLOOR, WINDOWS, type FloorKind, type Item, type WallKind } from '../sim/layout';
 import { floorTexture, WALL_PAINT, wallTexture } from './floors';
-import { buildItem, type Assets, type MatFn } from './furniture';
+import { buildItem, type Assets, type MatFn, type RoomLook } from './furniture';
 import { Materials, type ScenePalette } from './palette';
 import { groundShadow } from './textures';
 
@@ -50,7 +50,7 @@ export class Office {
   readonly items = new THREE.Group();
   private placed = new Map<string, Placed>();
   private screens = new Map<number, THREE.MeshStandardMaterial>();
-  private assets: Assets = { computer: null, desks: null, plants: null, decor: null };
+  private assets: Assets = { computer: null, desks: null, chairs: null, plants: null, decor: null };
   private assetsRev = 0;
   private lampIntensity = 0;
   private windows: THREE.MeshStandardMaterial;
@@ -154,17 +154,21 @@ export class Office {
   }
 
   /** Bring the 3D objects in line with the layout. */
-  sync(items: readonly Item[], style: DeskStyle): void {
+  sync(items: readonly Item[], look: RoomLook): void {
     const seen = new Set<string>();
-    const styleKey = `${style.model}/${style.top}/${style.frame}`;
+    const chairKey = (c: RoomLook['chairs']['desk']) => `${c.model}/${c.fabric}/${c.frame}`;
+    const keys: Partial<Record<Item['kind'], string>> = {
+      desk: `${look.desk.model}/${look.desk.top}/${look.desk.frame}|${chairKey(look.chairs.desk)}`,
+      meeting: chairKey(look.chairs.meeting),
+    };
     this.screens.clear();
     for (const item of items) {
       seen.add(item.id);
-      const sig = `${item.kind}|${item.decor ?? ''}|${this.assetsRev}|${item.kind === 'desk' ? styleKey : ''}`;
+      const sig = `${item.kind}|${item.decor ?? ''}|${this.assetsRev}|${keys[item.kind] ?? ''}`;
       let p = this.placed.get(item.id);
       if (!p || p.sig !== sig) {
         if (p) this.drop(p);
-        const built = buildItem(item, this.m, this.assets, style);
+        const built = buildItem(item, this.m, this.assets, look);
         built.obj.userData.itemId = item.id;
         if (built.lamp) built.lamp.intensity = this.lampIntensity;
         p = { sig, root: built.obj, screen: built.screen, lamp: built.lamp };

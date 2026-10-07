@@ -13,6 +13,9 @@ import {
   setDeskStyle,
   setFloor,
   setWalls,
+  setChairStyle,
+  type ChairPack,
+  type ChairStyle,
   type FloorKind,
   type WallKind,
   type DeskDecor,
@@ -178,6 +181,12 @@ export function floorFinish(floor: FloorKind): void {
 export function wallFinish(walls: WallKind): void {
   remember();
   setWalls(walls);
+  emit();
+}
+
+export function styleChairs(pack: ChairPack, patch: Partial<ChairStyle>): void {
+  remember();
+  setChairStyle(pack, patch);
   emit();
 }
 

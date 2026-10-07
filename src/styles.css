@@ -1385,6 +1385,18 @@ body.is-editing .legend {
   margin-bottom: 6px;
 }
 
+.room-pack {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.room-pack-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .floor-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
