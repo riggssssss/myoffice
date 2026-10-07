@@ -1,7 +1,6 @@
-import { CHAIR_MODELS, chairStyle, corners, deskBySlot, FLOOR, KINDS, layoutItems, layoutRevision, toWorld, type ChairPack, type Item, type P } from '../sim/layout';
+import { CHAIR_MODELS, chairStyle, corners, deskBySlot, DOOR_W, KINDS, layoutGeometry, layoutItems, layoutRevision, layoutRooms, onLine, toWorld, WALL_T, type ChairPack, type Item, type P } from '../sim/layout';
 import type { Activity, Worker } from '../sim/types';
 
-export { FLOOR };
 export const MEETING_SEATS = 6;
 export const MEETING_RADIUS = 1.45;
 
@@ -29,8 +28,6 @@ export type Point = P;
 export const DESK_SEAT = { x: 0, z: -1.25 };
 /** A visitor helping at someone's desk stands here, beside the chair. */
 export const DESK_GUEST = { x: 0.8, z: -1.15 };
-/** Coffee queue, in the counter's frame (counter faces -z, toward the room). */
-const COFFEE_QUEUE = (i: number) => ({ x: -1.05 + (i % 3) * 1.05, z: -1.0 - Math.floor(i / 3) * 0.9 });
 
 const unique = (kind: Item['kind']) => layoutItems().find((i) => i.kind === kind);
 
@@ -39,8 +36,11 @@ function itemSpot(item: Item, key: string, lx: number, lz: number, turn: number,
   return { key, x: p.x, z: p.z, rotY: item.rot + turn, pose };
 }
 
-/** Fallback when an object is missing: stand in the middle of the room. */
-const middle = (key: string): Spot => ({ key, x: 0, z: 0, rotY: 0, pose: 'stand' });
+/** Fallback when an object is missing: stand in the middle of the first room. */
+function middle(key: string): Spot {
+  const r = layoutRooms()[0];
+  return { key, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, rotY: 0, pose: 'stand' };
+}
 
 export function deskSeat(slot: number): Spot {
   const d = deskBySlot(slot);
@@ -67,11 +67,15 @@ export function meetingSeat(i: number): Spot {
   return { ...itemSpot(t, `meet-${i}`, c.x, c.z, c.rot, 'seat'), lift: seatLift('meeting') };
 }
 
+/** Coffee break: mug in hand, looking out of a window (each person picks a different one). */
 export function coffeeSpot(i: number): Spot {
-  const c = unique('coffee');
-  if (!c) return middle(`coffee-${i}`);
-  const q = COFFEE_QUEUE(i);
-  return itemSpot(c, `coffee-${i}`, q.x, q.z, 0, 'stand');
+  const windows = layoutItems().filter((it) => it.kind === 'window');
+  if (!windows.length) return middle(`coffee-${i}`);
+  const w = windows[i % windows.length];
+  // Several people at one window stand side by side.
+  const lap = Math.floor(i / windows.length);
+  const lx = lap ? (lap % 2 ? 0.55 : -0.55) * Math.ceil(lap / 2) : 0;
+  return itemSpot(w, `coffee-${i}`, lx, 0.85, Math.PI, 'stand');
 }
 
 /** Where a worker should be, given what they are doing. */
@@ -89,19 +93,20 @@ export function spotFor(w: Worker, index: number, all: Worker[]): Spot {
 // ---------------------------------------------------------------- walkable grid
 
 const CELL = 0.2;
-const COLS = Math.round((FLOOR.maxX - FLOOR.minX) / CELL);
-const ROWS = Math.round((FLOOR.maxZ - FLOOR.minZ) / CELL);
-/** Body radius kept clear of furniture. */
+/** Body radius kept clear of furniture and walls. */
 const CLEARANCE = 0.22;
 
 let gridRev = -1;
-let blocked = new Uint8Array(COLS * ROWS);
+let COLS = 1;
+let ROWS = 1;
+let origin: P = { x: 0, z: 0 };
+let blocked = new Uint8Array(1);
 
 const cellOf = (x: number, z: number) => ({
-  c: Math.min(COLS - 1, Math.max(0, Math.floor((x - FLOOR.minX) / CELL))),
-  r: Math.min(ROWS - 1, Math.max(0, Math.floor((z - FLOOR.minZ) / CELL))),
+  c: Math.min(COLS - 1, Math.max(0, Math.floor((x - origin.x) / CELL))),
+  r: Math.min(ROWS - 1, Math.max(0, Math.floor((z - origin.z) / CELL))),
 });
-const centre = (c: number, r: number): P => ({ x: FLOOR.minX + (c + 0.5) * CELL, z: FLOOR.minZ + (r + 0.5) * CELL });
+const centre = (c: number, r: number): P => ({ x: origin.x + (c + 0.5) * CELL, z: origin.z + (r + 0.5) * CELL });
 
 function inside(poly: P[], p: P): boolean {
   // Convex quad: same side of every edge.
@@ -121,12 +126,29 @@ function inside(poly: P[], p: P): boolean {
 function rebuildGrid(): void {
   if (gridRev === layoutRevision()) return;
   gridRev = layoutRevision();
-  blocked = new Uint8Array(COLS * ROWS);
-  // Keep away from the walls a little.
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      if (c === 0 || r === 0 || c === COLS - 1 || r === ROWS - 1) blocked[r * COLS + c] = 1;
+  const { bounds, joints } = layoutGeometry();
+  origin = { x: bounds.minX, z: bounds.minZ };
+  COLS = Math.max(1, Math.round((bounds.maxX - bounds.minX) / CELL));
+  ROWS = Math.max(1, Math.round((bounds.maxZ - bounds.minZ) / CELL));
+  // Everything starts blocked; open the inside of each room (clear of its walls) and each doorway.
+  blocked = new Uint8Array(COLS * ROWS).fill(1);
+  const keep = WALL_T / 2 + CLEARANCE;
+  const open = (x0: number, z0: number, x1: number, z1: number) => {
+    const a = cellOf(x0, z0);
+    const b = cellOf(x1, z1);
+    for (let r = a.r; r <= b.r; r++) {
+      for (let c = a.c; c <= b.c; c++) {
+        const p = centre(c, r);
+        if (p.x >= x0 && p.x <= x1 && p.z >= z0 && p.z <= z1) blocked[r * COLS + c] = 0;
+      }
     }
+  };
+  for (const room of layoutRooms()) open(room.x0 + keep, room.z0 + keep, room.x1 - keep, room.z1 - keep);
+  for (const j of joints) {
+    if (j.door === null) continue;
+    const a = onLine(j, j.door - DOOR_W / 2 + CLEARANCE, -keep - CELL);
+    const b = onLine(j, j.door + DOOR_W / 2 - CLEARANCE, keep + CELL);
+    open(Math.min(a.x, b.x), Math.min(a.z, b.z), Math.max(a.x, b.x), Math.max(a.z, b.z));
   }
   for (const item of layoutItems()) {
     const info = KINDS[item.kind];
@@ -158,7 +180,7 @@ function lineClear(a: P, b: P): boolean {
 /** Nearest walkable cell, so seats tucked under a desk edge still connect to the floor. */
 function nearestOpen(c0: number, r0: number): number {
   if (!blocked[r0 * COLS + c0]) return r0 * COLS + c0;
-  for (let ring = 1; ring < 12; ring++) {
+  for (let ring = 1; ring < 16; ring++) {
     let best = -1;
     let bestD = Infinity;
     for (let r = r0 - ring; r <= r0 + ring; r++) {

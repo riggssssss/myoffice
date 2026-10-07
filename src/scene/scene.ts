@@ -8,23 +8,29 @@ import { TotoroAvatar, totoroTemplate } from './totoro';
 
 type Figure = Avatar | TotoroAvatar;
 type SimWorker = SimState['workers'][number];
-import { chairStyle, deskStyle, floorKind, layoutItems, layoutRevision, wallKind } from '../sim/layout';
+import { chairStyle, deskStyle, layoutGeometry, layoutItems, layoutRevision, layoutRooms, windowStyle } from '../sim/layout';
 import { isEditing } from '../ui/roomState';
 import { Labels } from './labels';
 import { Links } from './links';
 import { spotFor } from './navigation';
 import { loadComputer } from './computer';
-import { loadChairs, loadDecor, loadDesks, loadPlants } from './plants';
+import { loadChairs, loadDecor, loadDesks, loadPlants, loadWindows } from './plants';
+import { setThumbVersion, ThumbRenderer } from './thumbs';
 import { Office } from './office';
 import { DARK, LIGHT, Materials, type ScenePalette } from './palette';
 import { RoomEditor } from './roomEditor';
 
-const HOME_TARGET = new THREE.Vector3(0.2, 0.4, 0);
 const CAMERA_DIR = new THREE.Vector3(1, 0.92, 1).normalize();
 /** Narrow lens: real perspective (so rotating reads correctly) but still a calm, model-like view. */
 const FOV = 26;
 const FOCUS_ZOOM = 1.85;
 const BLOCKED = new THREE.Color('#d0452f');
+/** Where the sun sits relative to the middle of the office. */
+const SUN_OFFSET = new THREE.Vector3(7, 14, 9);
+/** A slid view glides back to the middle this long after the last drag. */
+const PAN_RETURN_MS = 3500;
+/** How far past the office's edge the view may be slid. */
+const PAN_MARGIN = 2;
 
 export class OfficeScene {
   private renderer: THREE.WebGLRenderer;
@@ -58,6 +64,13 @@ export class OfficeScene {
   private editing = false;
   private tmpA = new THREE.Vector3();
   private tmpB = new THREE.Vector3();
+  /** Middle of the office (camera's resting target) and the extent it frames. */
+  private home = new THREE.Vector3(0, 0.4, 0);
+  private span = { w: 16, d: 11 };
+  private boundsKey = '';
+  private thumbs: ThumbRenderer;
+  /** When to glide a slid view back (0: not pending). */
+  private returnAt = 0;
   reducedMotion = false;
 
   constructor(
@@ -77,28 +90,35 @@ export class OfficeScene {
 
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.target.copy(HOME_TARGET);
     this.controls.enableDamping = true;
-    this.controls.enablePan = false;
+    // Right button (two fingers on touch) slides the view over the floor; it drifts back after a while.
+    this.controls.enablePan = true;
+    this.controls.screenSpacePanning = false;
+    this.controls.panSpeed = 0.8;
     this.controls.minPolarAngle = 0.72;
     this.controls.maxPolarAngle = 1.12;
-    this.controls.minAzimuthAngle = Math.PI / 4 - 0.75;
-    this.controls.maxAzimuthAngle = Math.PI / 4 + 0.75;
-    this.controls.addEventListener('start', () => (this.focus = null));
+    // All the way round: walls facing the camera drop out of the way (see Office.update).
+    this.controls.addEventListener('start', () => {
+      this.focus = null;
+      this.returnAt = 0;
+    });
+    this.controls.addEventListener('end', () => (this.returnAt = performance.now() + PAN_RETURN_MS));
 
     this.scene.add(this.hemi);
-    this.sun.position.set(7, 14, 9);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
-    Object.assign(this.sun.shadow.camera, { left: -12, right: 12, top: 12, bottom: -12, near: 1, far: 40 });
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = 0.02;
     this.sun.shadow.radius = 3;
-    this.scene.add(this.sun);
+    this.scene.add(this.sun, this.sun.target);
 
     this.office = new Office(this.mats, this.palette);
+    this.office.setSun(SUN_OFFSET.clone().negate());
     this.scene.add(this.office.group);
+    this.fitBounds();
+    this.controls.target.copy(this.home);
     this.syncOffice();
+    this.thumbs = new ThumbRenderer(() => this.office.assetList);
     loadComputer()
       .then((t) => this.office.setAsset('computer', t))
       .catch((e) => console.warn('iMac model failed to load; keeping placeholder monitors.', e));
@@ -114,6 +134,9 @@ export class OfficeScene {
     loadDecor()
       .then((t) => this.office.setAsset('decor', t))
       .catch((e) => console.warn('Decor models failed to load; keeping placeholder plants.', e));
+    loadWindows()
+      .then((t) => this.office.setAsset('windows', t))
+      .catch((e) => console.warn('Window models failed to load; keeping simple frames.', e));
 
     state.workers.forEach((w, i) => {
       const a = this.makeFigure(w, i);
@@ -131,7 +154,7 @@ export class OfficeScene {
 
     const el = this.renderer.domElement;
     this.roomEditor = new RoomEditor(this.scene, this.camera, el, this.controls, this.office);
-    el.addEventListener('pointerdown', (e) => (this.downAt = { x: e.clientX, y: e.clientY }));
+    el.addEventListener('pointerdown', (e) => (this.downAt = e.button === 0 ? { x: e.clientX, y: e.clientY } : null));
     el.addEventListener('pointerup', (e) => this.onPointerUp(e));
     el.addEventListener('pointermove', (e) => this.onPointerMove(e));
     el.addEventListener('pointerleave', () => this.hover(null));
@@ -198,9 +221,29 @@ export class OfficeScene {
     const key = `${layoutRevision()}|${this.office.assetsVersion}`;
     if (key === this.builtFor) return;
     this.builtFor = key;
-    this.office.sync(layoutItems(), { desk: deskStyle(), chairs: { desk: chairStyle('desk'), meeting: chairStyle('meeting') } });
-    this.office.setFloor(floorKind());
-    this.office.setWalls(wallKind());
+    this.office.sync(layoutRooms(), layoutItems(), {
+      desk: deskStyle(),
+      chairs: { desk: chairStyle('desk'), meeting: chairStyle('meeting') },
+      windows: windowStyle(),
+    });
+    setThumbVersion(this.office.assetsVersion);
+    this.fitBounds();
+  }
+
+  /** The office grew or shrank: re-aim the sun's shadows and the framing at its new extent. */
+  private fitBounds(): void {
+    const b = layoutGeometry().bounds;
+    const key = `${b.minX}|${b.maxX}|${b.minZ}|${b.maxZ}`;
+    if (key === this.boundsKey) return;
+    this.boundsKey = key;
+    this.home.set((b.minX + b.maxX) / 2, 0.4, (b.minZ + b.maxZ) / 2);
+    this.span = { w: b.maxX - b.minX, d: b.maxZ - b.minZ };
+    this.sun.target.position.set(this.home.x, 0, this.home.z);
+    this.sun.position.copy(this.sun.target.position).add(SUN_OFFSET);
+    const r = Math.hypot(this.span.w, this.span.d) / 2 + 3;
+    Object.assign(this.sun.shadow.camera, { left: -r, right: r, top: r, bottom: -r, near: 1, far: SUN_OFFSET.length() + r * 2 });
+    this.sun.shadow.camera.updateProjectionMatrix();
+    if (this.fitDist) this.resize();
   }
 
   frame(dt: number, time: number, state: SimState): void {
@@ -229,6 +272,9 @@ export class OfficeScene {
     this.roomEditor.update(layoutRevision());
     this.updateCamera(dt);
     this.controls.update();
+    this.limitPan();
+    this.office.update(this.camera, this.controls.target, dt, instant && !this.editing);
+    if (this.editing) this.thumbs.process();
     this.renderer.render(this.scene, this.camera);
     this.labelRenderer.render(this.scene, this.camera);
   }
@@ -307,12 +353,35 @@ export class OfficeScene {
     this.links.update(pairs, time, dt, !this.reducedMotion);
   }
 
+  /** Keep the slid view over the office, and send it home a few seconds after the last drag. */
+  private limitPan(): void {
+    const b = layoutGeometry().bounds;
+    const t = this.controls.target;
+    const x = THREE.MathUtils.clamp(t.x, b.minX - PAN_MARGIN, b.maxX + PAN_MARGIN);
+    const z = THREE.MathUtils.clamp(t.z, b.minZ - PAN_MARGIN, b.maxZ + PAN_MARGIN);
+    const dx = x - t.x;
+    const dz = z - t.z;
+    if (dx || dz) {
+      t.x += dx;
+      t.z += dz;
+      this.camera.position.x += dx;
+      this.camera.position.z += dz;
+    }
+    if (!this.returnAt || this.focus || performance.now() < this.returnAt) return;
+    this.returnAt = 0;
+    // Back to whoever is selected, else to the middle of the office; the zoom stays as it is.
+    const dist = this.camera.position.distanceTo(t);
+    const followed = this.selectedId && this.avatars.has(this.selectedId) ? this.selectedId : null;
+    const goal = followed ? this.avatars.get(followed)!.root.position : this.home;
+    if (Math.hypot(goal.x - t.x, goal.z - t.z) > 0.05) this.focus = { followId: followed, dist };
+  }
+
   private updateCamera(dt: number): void {
     if (!this.focus) return;
     const goal = this.tmpA;
     const followed = this.focus.followId ? this.avatars.get(this.focus.followId) : null;
     if (followed) goal.copy(followed.root.position).setY(0.8);
-    else goal.copy(HOME_TARGET);
+    else goal.copy(this.home);
 
     const k = this.reducedMotion ? 1 : 1 - Math.exp(-5 * dt);
     const offset = this.tmpB.copy(this.camera.position).sub(this.controls.target);
@@ -331,12 +400,13 @@ export class OfficeScene {
     const { clientWidth: w, clientHeight: h } = this.container;
     if (!w || !h) return;
     const aspect = w / h;
-    // Height of the view at the target plane that keeps the whole floor in frame.
-    const viewH = Math.max(13, (aspect < 1 ? 19 : 21.5) / aspect);
+    // Height of the view at the target plane that keeps the whole floor in frame (from any side).
+    const k = Math.hypot(this.span.w, this.span.d) / 19.4;
+    const viewH = Math.max(13 * k, ((aspect < 1 ? 19 : 21.5) * k) / aspect);
     const fit = viewH / 2 / Math.tan(THREE.MathUtils.degToRad(FOV / 2));
     if (!this.fitDist) {
-      this.camera.position.copy(HOME_TARGET).addScaledVector(CAMERA_DIR, fit);
-      this.camera.lookAt(HOME_TARGET);
+      this.camera.position.copy(this.home).addScaledVector(CAMERA_DIR, fit);
+      this.camera.lookAt(this.home);
     } else {
       // Keep the user's relative framing when the viewport changes.
       const offset = this.camera.position.clone().sub(this.controls.target).multiplyScalar(fit / this.fitDist);

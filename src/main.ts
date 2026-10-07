@@ -12,7 +12,9 @@ import type { Speed } from './sim/types';
 import { OfficeScene } from './scene/scene';
 import { Region, fill, pct } from './ui/dom';
 import { bindRoom, renderRoom, roomFooter } from './ui/roomPanel';
+import { onThumbs } from './scene/thumbs';
 import {
+  editRoom,
   editSelection,
   isEditing,
   nudgeItem,
@@ -20,7 +22,7 @@ import {
   remove,
   resetRoom,
   rotateItem,
-  selectItem,
+  selectRoom,
   setEditing,
   undoLast,
 } from './ui/roomState';
@@ -149,9 +151,10 @@ function renderRoomPanel(): void {
 }
 onEditChange(renderRoomPanel);
 onLayoutChange(renderRoomPanel);
+onThumbs(renderRoomPanel);
 
 const editBtn = $('edit-room');
-editBtn.innerHTML = `${icon.room(15)}<span>Editar sala</span>`;
+editBtn.innerHTML = `${icon.room(15)}<span>Editar oficina</span>`;
 editBtn.addEventListener('click', () => toggleEditing(!isEditing()));
 
 function toggleEditing(on: boolean): void {
@@ -194,7 +197,7 @@ function confirmResetRoom(): void {
   d.innerHTML = `
     <form method="dialog" class="dialog-form">
       <header class="dialog-head"><h2>¿Volver a la distribución original?</h2></header>
-      <p>Los muebles y plantas vuelven a su sitio inicial y se quita lo que hayas añadido. Puedes deshacerlo después.</p>
+      <p>Vuelven las dos salas iniciales con sus muebles en su sitio, y se quita lo que hayas añadido. Puedes deshacerlo después.</p>
       <footer class="dialog-foot">
         <button class="btn btn-ghost" value="cancel" autofocus>Cancelar</button>
         <button class="btn btn-primary" value="reset">Restaurar</button>
@@ -220,7 +223,7 @@ function roomKeys(e: KeyboardEvent): boolean {
   if (e.metaKey || e.ctrlKey) return false;
   const id = editSelection();
   if (e.key === 'Escape') {
-    if (id) selectItem(null);
+    if (id || editRoom()) selectRoom(null);
     else toggleEditing(false);
     return true;
   }

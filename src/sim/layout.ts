@@ -1,25 +1,26 @@
 /**
- * Room layout: every movable object in the office, as plain data. The scene builds meshes
- * from it, navigation derives walkable floor and seats from it, the room editor edits it.
+ * Office layout as plain data: the rooms (rectangles that join into bigger shapes) and every
+ * movable object in them. The scene builds meshes from it, navigation derives walkable floor,
+ * doors and seats from it, the room editor edits it.
  */
 
-/** Floor footprint of the diorama. */
-export const FLOOR = { minX: -8, maxX: 8, minZ: -5.5, maxZ: 5.5 };
-/** Windows are part of the building: wall objects can't cover them. Back wall, centre x and width. */
-export const WINDOWS = [-5.6, -2.4, 0.8].map((x) => ({ x, w: 2.3 }));
+/** Wall thickness and height. Walls straddle the room edges. */
+export const WALL_T = 0.12;
+export const WALL_H = 3.2;
+const HALF = WALL_T / 2;
+/** A new room is one parcel: room for six desks with walkways around them. */
+export const PARCEL = 9;
+export const ROOM_MIN = 3;
+export const ROOM_MAX = 27;
+/** Rooms snap to this grid when resized. */
+export const ROOM_GRID = 0.5;
+/** Doorway between two joined rooms, centred on the wall they share. */
+export const DOOR_W = 1.4;
+export const DOOR_H = 2.15;
+/** Shared wall needed for a doorway (door plus a bit of wall each side). */
+export const JOIN_MIN = DOOR_W + 0.4;
 
-export type ItemKind =
-  | 'desk'
-  | 'meeting'
-  | 'coffee'
-  | 'shelf'
-  | 'whiteboard'
-  | 'plantTallA'
-  | 'plantTallB'
-  | 'plantLowA'
-  | 'plantLowB'
-  | 'wickerVase'
-  | 'bush';
+export type ItemKind = 'desk' | 'meeting' | 'shelf' | 'whiteboard' | 'window' | 'plantLowA' | 'plantLowB' | 'wickerVase' | 'bush';
 
 export type DeskDecor = 'plant' | 'books' | 'none';
 
@@ -28,7 +29,7 @@ export interface Item {
   kind: ItemKind;
   x: number;
   z: number;
-  /** Radians around y. */
+  /** Radians around y. Wall objects face into their room (local +z). */
   rot: number;
   /** Desks only: the seat a worker is assigned to (Worker.desk). */
   slot?: number;
@@ -53,8 +54,10 @@ export interface KindInfo {
   footprint: Rect;
   /** What people can't walk through. Defaults to the footprint. */
   solid?: Rect[];
-  /** Hangs on a wall instead of standing on the floor. */
+  /** Hangs on (or sits in) an outside wall instead of standing on the floor. */
   wall?: boolean;
+  /** Wall objects: how far in front of the wall's centre line it sits. */
+  inset?: number;
   /** The office needs exactly one: it can move but not be removed or copied. */
   unique?: boolean;
 }
@@ -73,22 +76,13 @@ export const KINDS: Record<ItemKind, KindInfo> = {
     solid: [{ w: 1.9, d: 1.9 }],
     unique: true,
   },
-  coffee: {
-    label: 'Barra de café',
-    category: 'Mobiliario',
-    // The counter plus the queue in front of it.
-    footprint: { w: 3.2, d: 2.6, cz: -0.95 },
-    solid: [{ w: 3.1, d: 0.7 }],
-    unique: true,
-  },
   shelf: { label: 'Estantería', category: 'Mobiliario', footprint: { w: 0.45, d: 2.5 } },
-  whiteboard: { label: 'Pizarra', category: 'Pared', footprint: { w: 2.8, d: 0.1 }, wall: true },
-  plantTallA: { label: 'Ave del paraíso alta', category: 'Plantas', footprint: { w: 0.7, d: 0.7 } },
-  plantTallB: { label: 'Ave del paraíso alta II', category: 'Plantas', footprint: { w: 0.7, d: 0.7 } },
   plantLowA: { label: 'Ave del paraíso', category: 'Plantas', footprint: { w: 0.7, d: 0.7 } },
   plantLowB: { label: 'Ave del paraíso II', category: 'Plantas', footprint: { w: 0.7, d: 0.7 } },
   wickerVase: { label: 'Cesta de mimbre', category: 'Plantas', footprint: { w: 0.75, d: 0.75 } },
   bush: { label: 'Arbusto en maceta', category: 'Plantas', footprint: { w: 0.65, d: 0.65 } },
+  window: { label: 'Ventana', category: 'Pared', footprint: { w: 2.2, d: 0.1 }, wall: true, inset: 0 },
+  whiteboard: { label: 'Pizarra', category: 'Pared', footprint: { w: 2.8, d: 0.1 }, wall: true, inset: HALF + 0.03 },
 };
 
 export const KIND_ORDER = Object.keys(KINDS) as ItemKind[];
@@ -102,7 +96,7 @@ export interface DeskStyle {
   top: DeskTop;
   frame: DeskFrame;
 }
-/** Floor finish for the whole room. 'plain' is the original flat floor. */
+/** Floor finish of one room. 'plain' is the original flat floor. */
 export type FloorKind = 'plain' | 'oak' | 'walnut' | 'herringbone' | 'tiles' | 'concrete' | 'terrazzo' | 'carpet';
 export const FLOORS: { id: FloorKind; label: string }[] = [
   { id: 'plain', label: 'Liso (el de siempre)' },
@@ -115,7 +109,7 @@ export const FLOORS: { id: FloorKind; label: string }[] = [
   { id: 'carpet', label: 'Moqueta' },
 ];
 
-/** Finish on the inside of the two walls. 'plain' is the original cream wall. */
+/** Finish on the inside of one room's walls. 'plain' is the original cream wall. */
 export type WallKind = 'plain' | 'sage' | 'terracotta' | 'mist' | 'slats' | 'brick' | 'concrete' | 'stripes';
 export const WALLS: { id: WallKind; label: string }[] = [
   { id: 'plain', label: 'Liso (el de siempre)' },
@@ -230,12 +224,222 @@ export const DESK_DECOR: { id: DeskDecor; label: string }[] = [
   { id: 'none', label: 'Nada' },
 ];
 
-// ---------------------------------------------------------------- geometry
+/** Every window in the office shares one design; each one is placed on its own. */
+export type WindowModel = 'slider' | 'door';
+export interface WindowStyle {
+  model: WindowModel;
+  frame: string;
+}
+/** Opening each model cuts in the wall (metres, from the floor). */
+export const WINDOW_MODELS: { id: WindowModel; label: string; note: string; width: number; sill: number; head: number }[] = [
+  { id: 'slider', label: 'Corredera', note: 'Ventana de dos hojas con antepecho', width: 2.0, sill: 0.71, head: 1.99 },
+  { id: 'door', label: 'Balconera', note: 'Puerta ventana hasta el suelo', width: 2.1, sill: 0, head: 2.05 },
+];
+export const WINDOW_FRAMES: { id: string; label: string; color: string }[] = [
+  { id: 'white', label: 'Blanco', color: '#efede8' },
+  { id: 'anthracite', label: 'Antracita', color: '#3a3d42' },
+  { id: 'black', label: 'Negro', color: '#1e1e1e' },
+  { id: 'oak', label: 'Roble', color: '#b98b5a' },
+  { id: 'alu', label: 'Aluminio', color: '#b4b7ba' },
+];
+export const DEFAULT_WINDOW_STYLE: WindowStyle = { model: 'slider', frame: 'white' };
+export const windowModel = (id: WindowModel) => WINDOW_MODELS.find((m) => m.id === id)!;
+
+// ---------------------------------------------------------------- rooms
+
+export interface Room {
+  id: string;
+  name: string;
+  /** Edges on the room grid; walls are centred on them. */
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+  floor: FloorKind;
+  walls: WallKind;
+}
+
+export type RoomRect = Pick<Room, 'x0' | 'z0' | 'x1' | 'z1'>;
+export type Side = 'back' | 'front' | 'left' | 'right';
+export const SIDES: Side[] = ['back', 'right', 'front', 'left'];
 
 export interface P {
   x: number;
   z: number;
 }
+
+/**
+ * A straight wall: along x (line z = at) or along z (line x = at), from `from` to `to`.
+ * `inward` points into the room it belongs to (exterior walls only).
+ */
+export interface WallLine {
+  axis: 'x' | 'z';
+  at: number;
+  from: number;
+  to: number;
+}
+export interface OuterWall extends WallLine {
+  room: string;
+  inward: P;
+}
+/** Wall shared by two rooms, with a doorway in the middle. */
+export interface Joint extends WallLine {
+  a: string;
+  b: string;
+  /** Doorway centre along the wall, or null when the shared stretch is too short for one. */
+  door: number | null;
+}
+
+export interface RoomGeometry {
+  outer: OuterWall[];
+  joints: Joint[];
+  /** Floor kept clear in front of each doorway, both sides. */
+  doorZones: P[][];
+  bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
+}
+
+const EPS = 1e-6;
+const same = (a: number, b: number) => Math.abs(a - b) < EPS;
+
+function sideLine(r: RoomRect, side: Side): WallLine & { inward: P } {
+  switch (side) {
+    case 'back':
+      return { axis: 'x', at: r.z0, from: r.x0, to: r.x1, inward: { x: 0, z: 1 } };
+    case 'front':
+      return { axis: 'x', at: r.z1, from: r.x0, to: r.x1, inward: { x: 0, z: -1 } };
+    case 'left':
+      return { axis: 'z', at: r.x0, from: r.z0, to: r.z1, inward: { x: 1, z: 0 } };
+    case 'right':
+      return { axis: 'z', at: r.x1, from: r.z0, to: r.z1, inward: { x: -1, z: 0 } };
+  }
+}
+
+/** Where two rooms touch along a side (same line, overlapping stretch), if they do. */
+function touch(a: RoomRect, b: RoomRect): WallLine | null {
+  if (same(a.x1, b.x0) || same(b.x1, a.x0)) {
+    const from = Math.max(a.z0, b.z0);
+    const to = Math.min(a.z1, b.z1);
+    if (to - from > EPS) return { axis: 'z', at: same(a.x1, b.x0) ? a.x1 : a.x0, from, to };
+  }
+  if (same(a.z1, b.z0) || same(b.z1, a.z0)) {
+    const from = Math.max(a.x0, b.x0);
+    const to = Math.min(a.x1, b.x1);
+    if (to - from > EPS) return { axis: 'x', at: same(a.z1, b.z0) ? a.z1 : a.z0, from, to };
+  }
+  return null;
+}
+
+/** Point on a wall line: `along` the wall, `across` off its centre line. */
+export function onLine(l: WallLine, along: number, across = 0): P {
+  return l.axis === 'x' ? { x: along, z: l.at + across } : { x: l.at + across, z: along };
+}
+
+const cache = new WeakMap<readonly Room[], RoomGeometry>();
+
+/** Walls, doorways and bounds derived from the rooms (cached per rooms array). */
+export function roomGeometry(rooms: readonly Room[]): RoomGeometry {
+  let g = cache.get(rooms);
+  if (g) return g;
+  const joints: Joint[] = [];
+  for (let i = 0; i < rooms.length; i++) {
+    for (let j = i + 1; j < rooms.length; j++) {
+      const t = touch(rooms[i], rooms[j]);
+      if (!t) continue;
+      const door = t.to - t.from >= JOIN_MIN - EPS ? (t.from + t.to) / 2 : null;
+      joints.push({ ...t, a: rooms[i].id, b: rooms[j].id, door });
+    }
+  }
+  const outer: OuterWall[] = [];
+  for (const r of rooms) {
+    for (const side of SIDES) {
+      const l = sideLine(r, side);
+      // Cut away every stretch this side shares with a neighbour; what's left faces outside.
+      const shared = joints
+        .filter((j) => (j.a === r.id || j.b === r.id) && j.axis === l.axis && same(j.at, l.at))
+        .sort((p, q) => p.from - q.from);
+      let cur = l.from;
+      for (const s of shared) {
+        if (s.from - cur > EPS) outer.push({ axis: l.axis, at: l.at, from: cur, to: s.from, room: r.id, inward: l.inward });
+        cur = Math.max(cur, s.to);
+      }
+      if (l.to - cur > EPS) outer.push({ axis: l.axis, at: l.at, from: cur, to: l.to, room: r.id, inward: l.inward });
+    }
+  }
+  const doorZones: P[][] = [];
+  for (const j of joints) {
+    if (j.door === null) continue;
+    const a = j.door - DOOR_W / 2;
+    const b = j.door + DOOR_W / 2;
+    const d = HALF + 0.4;
+    doorZones.push([onLine(j, a, -d), onLine(j, b, -d), onLine(j, b, d), onLine(j, a, d)]);
+  }
+  const bounds = {
+    minX: Math.min(...rooms.map((r) => r.x0)),
+    maxX: Math.max(...rooms.map((r) => r.x1)),
+    minZ: Math.min(...rooms.map((r) => r.z0)),
+    maxZ: Math.max(...rooms.map((r) => r.z1)),
+  };
+  g = { outer, joints, doorZones, bounds };
+  cache.set(rooms, g);
+  return g;
+}
+
+export const roomOf = (rooms: readonly Room[], p: P) =>
+  rooms.find((r) => p.x > r.x0 - EPS && p.x < r.x1 + EPS && p.z > r.z0 - EPS && p.z < r.z1 + EPS);
+
+const overlap2 = (a: RoomRect, b: RoomRect) => a.x0 < b.x1 - EPS && b.x0 < a.x1 - EPS && a.z0 < b.z1 - EPS && b.z0 < a.z1 - EPS;
+
+/** Why a set of rooms isn't a valid office, or null. */
+export function roomsProblem(rooms: readonly Room[]): string | null {
+  for (const r of rooms) {
+    const w = r.x1 - r.x0;
+    const d = r.z1 - r.z0;
+    if (w < ROOM_MIN - EPS || d < ROOM_MIN - EPS) return `Una sala mide al menos ${ROOM_MIN} × ${ROOM_MIN} m`;
+    if (w > ROOM_MAX + EPS || d > ROOM_MAX + EPS) return `Una sala mide como mucho ${ROOM_MAX} m por lado`;
+  }
+  for (let i = 0; i < rooms.length; i++) {
+    for (let j = i + 1; j < rooms.length; j++) {
+      if (overlap2(rooms[i], rooms[j])) return 'Se metería dentro de otra sala';
+    }
+  }
+  // Every room reachable through doorways.
+  const { joints } = roomGeometry(rooms);
+  const seen = new Set([rooms[0]?.id]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const j of joints) {
+      if (j.door === null) continue;
+      if (seen.has(j.a) !== seen.has(j.b)) {
+        seen.add(j.a);
+        seen.add(j.b);
+        grew = true;
+      }
+    }
+  }
+  if (seen.size < rooms.length) return 'Cada sala tiene que compartir pared con otra (1,8 m o más, para la puerta)';
+  return null;
+}
+
+/** Rect of a parcel-sized room glued to one side of `r`, aligned with its start (or end). */
+export function besideRect(r: RoomRect, side: Side, alignEnd = false): RoomRect {
+  const s = PARCEL;
+  switch (side) {
+    case 'right':
+    case 'left': {
+      const z0 = alignEnd ? r.z1 - s : r.z0;
+      const x0 = side === 'right' ? r.x1 : r.x0 - s;
+      return { x0, x1: x0 + s, z0, z1: z0 + s };
+    }
+    case 'front':
+    case 'back': {
+      const x0 = alignEnd ? r.x1 - s : r.x0;
+      const z0 = side === 'front' ? r.z1 : r.z0 - s;
+      return { x0, x1: x0 + s, z0, z1: z0 + s };
+    }
+  }
+}
+
+// ---------------------------------------------------------------- items
 
 /** Corners of a rect placed with an item's transform. */
 export function corners(item: Pick<Item, 'x' | 'z' | 'rot'>, r: Rect): P[] {
@@ -293,66 +497,96 @@ export function overlaps(a: P[], b: P[], margin = 0.02): boolean {
   return true;
 }
 
-export type Wall = 'back' | 'left';
+export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const rotFor = (n: P) => Math.atan2(n.x, n.z);
+/** Wall objects keep this far from the ends of their wall. */
+const WALL_END = 0.15;
 
-/** Wall objects slide along the back or left wall, flat against it. */
-export function snapToWall(x: number, z: number, w: number): { x: number; z: number; rot: number; wall: Wall } {
-  const toBack = z - FLOOR.minZ;
-  const toLeft = x - FLOOR.minX;
-  if (toBack <= toLeft) {
-    return { x: clamp(x, FLOOR.minX + w / 2, FLOOR.maxX - w / 2), z: FLOOR.minZ + 0.03, rot: 0, wall: 'back' };
-  }
-  return { x: FLOOR.minX + 0.03, z: clamp(z, FLOOR.minZ + w / 2, FLOOR.maxZ - w / 2), rot: Math.PI / 2, wall: 'left' };
+/** The outside wall a wall object hangs on, if it is on one. */
+export function wallOf(item: Pick<Item, 'x' | 'z' | 'rot' | 'kind'>, rooms: readonly Room[]): OuterWall | undefined {
+  const inset = KINDS[item.kind].inset ?? 0;
+  const nx = Math.sin(item.rot);
+  const nz = Math.cos(item.rot);
+  return roomGeometry(rooms).outer.find((w) => {
+    if (w.inward.x * nx + w.inward.z * nz < 0.99) return false;
+    const p = onLine(w, w.axis === 'x' ? item.x : item.z);
+    const off = (item.x - p.x) * w.inward.x + (item.z - p.z) * w.inward.z;
+    const along = w.axis === 'x' ? item.x : item.z;
+    return Math.abs(off - inset) < 0.05 && along > w.from - EPS && along < w.to + EPS;
+  });
 }
 
-export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+/** Wall objects slide along the outside walls, flat against (or set into) the nearest one. */
+export function snapToWall(item: Pick<Item, 'kind'>, x: number, z: number, rooms: readonly Room[]): { x: number; z: number; rot: number } | null {
+  const info = KINDS[item.kind];
+  const w = info.footprint.w;
+  let best: { x: number; z: number; rot: number } | null = null;
+  let bestD = Infinity;
+  for (const wall of roomGeometry(rooms).outer) {
+    if (wall.to - wall.from < w + WALL_END * 2) continue;
+    const along = clamp(wall.axis === 'x' ? x : z, wall.from + w / 2 + WALL_END, wall.to - w / 2 - WALL_END);
+    const p = onLine(wall, along);
+    const q = { x: p.x + wall.inward.x * (info.inset ?? 0), z: p.z + wall.inward.z * (info.inset ?? 0) };
+    // Prefer walls on the inside of the room the pointer is in.
+    const d = Math.hypot(q.x - x, q.z - z);
+    if (d < bestD) {
+      bestD = d;
+      best = { x: q.x, z: q.z, rot: rotFor(wall.inward) };
+    }
+  }
+  return best;
+}
+
+const label = (kind: ItemKind) => KINDS[kind].label.toLowerCase();
 
 /** Why an item can't stand where it is, or null if the spot is fine. `pad` asks for extra room around it. */
-export function placementProblem(item: Item, items: Item[], pad = 0): string | null {
+export function placementProblem(item: Item, items: readonly Item[], rooms: readonly Room[] = saved.rooms, pad = 0): string | null {
   const info = KINDS[item.kind];
   const f = info.footprint;
   const mine = corners(item, pad ? { ...f, w: f.w + pad * 2, d: f.d + pad * 2 } : f);
   if (info.wall) {
-    const along = (p: P) => (Math.abs(item.rot) < 0.01 ? p.x : p.z);
-    const lo = Math.min(...mine.map(along));
-    const hi = Math.max(...mine.map(along));
-    if (Math.abs(item.rot) < 0.01) {
-      for (const win of WINDOWS) {
-        if (hi > win.x - win.w / 2 + 0.02 && lo < win.x + win.w / 2 - 0.02) return 'Tapa una ventana';
-      }
-    }
+    const wall = wallOf(item, rooms);
+    if (!wall) return 'Va en una pared exterior';
+    const along = wall.axis === 'x' ? item.x : item.z;
+    if (along - f.w / 2 < wall.from + WALL_END - 0.01 || along + f.w / 2 > wall.to - WALL_END + 0.01) return 'No cabe en ese tramo de pared';
     for (const other of items) {
       if (other.id === item.id || !KINDS[other.kind].wall) continue;
-      if (overlaps(mine, corners(other, KINDS[other.kind].footprint))) return `Choca con: ${KINDS[other.kind].label.toLowerCase()}`;
+      if (wallOf(other, rooms) !== wall) continue;
+      const o = wall.axis === 'x' ? other.x : other.z;
+      if (Math.abs(o - along) < (f.w + KINDS[other.kind].footprint.w) / 2 - 0.01) return `Choca con: ${label(other.kind)}`;
     }
     return null;
   }
-  for (const p of mine) {
-    if (p.x < FLOOR.minX - 0.01 || p.x > FLOOR.maxX + 0.01 || p.z < FLOOR.minZ - 0.01 || p.z > FLOOR.maxZ + 0.01) {
-      return 'Se sale de la sala';
-    }
-  }
+  // Whole footprint inside one room, clear of its walls.
+  const room = roomOf(rooms, { x: item.x, z: item.z });
+  const inside = (p: P) => room && p.x >= room.x0 + HALF - 0.01 && p.x <= room.x1 - HALF + 0.01 && p.z >= room.z0 + HALF - 0.01 && p.z <= room.z1 - HALF + 0.01;
+  if (!room || !mine.every(inside)) return 'Se sale de la sala';
+  for (const zone of roomGeometry(rooms).doorZones) if (overlaps(mine, zone)) return 'Tapa una puerta';
   for (const other of items) {
     if (other.id === item.id || KINDS[other.kind].wall) continue;
-    if (overlaps(mine, corners(other, KINDS[other.kind].footprint))) return `Choca con: ${KINDS[other.kind].label.toLowerCase()}`;
+    if (overlaps(mine, corners(other, KINDS[other.kind].footprint))) return `Choca con: ${label(other.kind)}`;
   }
   return null;
 }
 
-/** Nearest free spot to (x, z) for an item, searching outwards; null if the room is full. */
-export function findFreeSpot(item: Item, items: Item[], x: number, z: number, pad = 0): { x: number; z: number; rot: number } | null {
+/** Nearest free spot to (x, z) for an item, searching outwards; null if the office is full. */
+export function findFreeSpot(item: Item, items: readonly Item[], x: number, z: number, pad = 0, rooms: readonly Room[] = saved.rooms): { x: number; z: number; rot: number } | null {
   const info = KINDS[item.kind];
   const step = 0.25;
-  for (let ring = 0; ring < 60; ring++) {
+  for (let ring = 0; ring < 120; ring++) {
     const n = Math.max(1, ring * 8);
     for (let k = 0; k < n; k++) {
       const a = (k / n) * Math.PI * 2;
       let px = snap(x + Math.cos(a) * ring * step);
       let pz = snap(z + Math.sin(a) * ring * step);
       let rot = item.rot;
-      if (info.wall) ({ x: px, z: pz, rot } = snapToWall(px, pz, info.footprint.w));
+      if (info.wall) {
+        const s = snapToWall(item, px, pz, rooms);
+        if (!s) return null;
+        ({ x: px, z: pz, rot } = s);
+      }
       const probe = { ...item, x: px, z: pz, rot };
-      if (!placementProblem(probe, items, pad)) return { x: px, z: pz, rot };
+      if (!placementProblem(probe, items, rooms, pad)) return { x: px, z: pz, rot };
     }
   }
   return null;
@@ -361,56 +595,70 @@ export function findFreeSpot(item: Item, items: Item[], x: number, z: number, pa
 export const GRID = 0.25;
 export const snap = (v: number, grid = GRID) => Math.round(v / grid) * grid;
 
-// ---------------------------------------------------------------- default room
+// ---------------------------------------------------------------- default office
+
+/** Two parcels side by side: the team's room and the meeting room, joined by a doorway. */
+function seedRooms(): Room[] {
+  const h = PARCEL / 2;
+  return [
+    { id: 'r1', name: 'Zona de trabajo', x0: -PARCEL, z0: -h, x1: 0, z1: h, floor: 'plain', walls: 'plain' },
+    { id: 'r2', name: 'Sala de reuniones', x0: 0, z0: -h, x1: PARCEL, z1: h, floor: 'plain', walls: 'plain' },
+  ];
+}
 
 function seedItems(): Item[] {
   const items: Item[] = [];
   let n = 0;
   const add = (kind: ItemKind, x: number, z: number, rot = 0, extra: Partial<Item> = {}) =>
     items.push({ id: `i${++n}`, kind, x, z, rot, ...extra });
+  const h = PARCEL / 2;
+  const back = -h + KINDS.whiteboard.inset!;
 
+  // Two benches of three desks facing each other, a walkway all round.
   for (let i = 0; i < 6; i++) {
     const col = i % 3;
     const row = Math.floor(i / 3);
-    add('desk', -5.2 + col * 3.2, row === 0 ? -1.1 : 1.1, row === 0 ? 0 : Math.PI, {
+    add('desk', -6.9 + col * 2.4, row === 0 ? -1.25 : 1.25, row === 0 ? 0 : Math.PI, {
       slot: i,
       decor: i % 2 ? 'plant' : 'books',
     });
   }
-  add('meeting', 5.6, -2.4);
-  add('coffee', 5.75, 4.35);
-  add('shelf', FLOOR.minX + 0.25, 0);
-  add('whiteboard', 5.6, FLOOR.minZ + 0.03);
-  add('plantTallA', -7.4, -4.9, 0.6);
-  add('plantTallB', 7.4, -4.9, -0.5);
-  add('plantLowA', -7.4, 4.9, 2.2);
-  add('plantLowB', 2.7, -4.9);
+  add('meeting', 4.5, 0);
+  add('whiteboard', 4.5, back);
+  add('shelf', PARCEL - 0.35, -2.4);
+  // Windows: two at the back of the team room, one on each side wall, one at the front.
+  add('window', -6.9, -h, 0);
+  add('window', -2.1, -h, 0);
+  add('window', -PARCEL, 1.5, Math.PI / 2);
+  add('window', -4.5, h, Math.PI);
+  add('window', 7.5, -h, 0);
+  add('window', PARCEL, 1.75, -Math.PI / 2);
+  add('plantLowA', 8.35, 3.85, 2.2);
+  add('plantLowB', 0.75, -3.85);
+  add('bush', -8.35, 3.85);
+  add('wickerVase', -0.75, 3.85);
   return items;
 }
 
 // ---------------------------------------------------------------- store
 
 const STORAGE_KEY = 'oficina-3d:layout';
-const VERSION = 1;
+/** v2: rooms. Older saves (single fixed room) start over from the new default office. */
+const VERSION = 2;
 
 interface Saved {
   version: number;
+  rooms: Room[];
   items: Item[];
   nextId: number;
+  nextRoom: number;
   deskStyle: DeskStyle;
-  floor: FloorKind;
-  walls: WallKind;
   chairs: Record<ChairPack, ChairStyle>;
+  windows: WindowStyle;
 }
 
 /** What undo restores. */
-export interface LayoutSnapshot {
-  items: Item[];
-  deskStyle: DeskStyle;
-  floor: FloorKind;
-  walls: WallKind;
-  chairs: Record<ChairPack, ChairStyle>;
-}
+export type LayoutSnapshot = Omit<Saved, 'version' | 'nextId' | 'nextRoom'>;
 
 const defaultChairs = (): Record<ChairPack, ChairStyle> => ({
   desk: { ...CHAIR_DEFAULTS.classic },
@@ -422,29 +670,49 @@ function load(): Saved {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const s = JSON.parse(raw) as Saved;
-      if (s.version === VERSION && Array.isArray(s.items)) {
+      if (s.version === VERSION && Array.isArray(s.items) && Array.isArray(s.rooms) && s.rooms.length) {
         s.items = s.items.filter((i) => i.kind in KINDS);
+        s.rooms = s.rooms.map((r) => ({
+          ...r,
+          floor: FLOORS.some((f) => f.id === r.floor) ? r.floor : 'plain',
+          walls: WALLS.some((w) => w.id === r.walls) ? r.walls : 'plain',
+        }));
+        if (roomsProblem(s.rooms)) return fresh();
         s.deskStyle = { ...DEFAULT_DESK_STYLE, ...s.deskStyle };
-        if (!FLOORS.some((f) => f.id === s.floor)) s.floor = 'plain';
-        if (!WALLS.some((w) => w.id === s.walls)) s.walls = 'plain';
         const chairs = defaultChairs();
         for (const pack of ['desk', 'meeting'] as const) {
           const c = s.chairs?.[pack];
           if (c && CHAIR_MODELS.some((m) => m.id === c.model)) chairs[pack] = chairStyleFor(c);
         }
         s.chairs = chairs;
+        const w = s.windows;
+        s.windows = {
+          model: WINDOW_MODELS.some((m) => m.id === w?.model) ? w.model : DEFAULT_WINDOW_STYLE.model,
+          frame: WINDOW_FRAMES.some((f) => f.id === w?.frame) ? w.frame : DEFAULT_WINDOW_STYLE.frame,
+        };
+        s.nextRoom ||= s.rooms.length + 1;
         return s;
       }
     }
   } catch {
-    /* storage unavailable or corrupt: default room */
+    /* storage unavailable or corrupt: default office */
   }
   return fresh();
 }
 
 function fresh(): Saved {
   const items = seedItems();
-  return { version: VERSION, items, nextId: items.length + 1, deskStyle: { ...DEFAULT_DESK_STYLE }, floor: 'plain', walls: 'plain', chairs: defaultChairs() };
+  const rooms = seedRooms();
+  return {
+    version: VERSION,
+    rooms,
+    items,
+    nextId: items.length + 1,
+    nextRoom: rooms.length + 1,
+    deskStyle: { ...DEFAULT_DESK_STYLE },
+    chairs: defaultChairs(),
+    windows: { ...DEFAULT_WINDOW_STYLE },
+  };
 }
 
 let saved = load();
@@ -463,13 +731,21 @@ function changed(): void {
 }
 
 export const layoutItems = (): readonly Item[] => saved.items;
+export const layoutRooms = (): readonly Room[] => saved.rooms;
+export const layoutGeometry = () => roomGeometry(saved.rooms);
 export const deskStyle = (): Readonly<DeskStyle> => saved.deskStyle;
-export const floorKind = (): FloorKind => saved.floor;
-export const wallKind = (): WallKind => saved.walls;
+export const windowStyle = (): Readonly<WindowStyle> => saved.windows;
 export const chairStyle = (pack: ChairPack): Readonly<ChairStyle> => saved.chairs[pack];
 export const layoutRevision = () => revision;
 export const layoutItem = (id: string | null) => (id ? saved.items.find((i) => i.id === id) : undefined);
+export const layoutRoom = (id: string | null) => (id ? saved.rooms.find((r) => r.id === id) : undefined);
 export const deskBySlot = (slot: number) => saved.items.find((i) => i.kind === 'desk' && i.slot === slot);
+
+/** The room an item belongs to: where it stands, or the room its wall faces. */
+export function itemRoom(item: Item, rooms: readonly Room[] = saved.rooms): Room | undefined {
+  if (!KINDS[item.kind].wall) return roomOf(rooms, item);
+  return roomOf(rooms, toWorld(item, 0, 0.4));
+}
 
 export function onLayoutChange(fn: () => void): () => void {
   listeners.add(fn);
@@ -496,7 +772,7 @@ export function duplicateItem(id: string): Item | null {
   if (!src || KINDS[src.kind].unique) return null;
   const copy = addItem(src.kind, { x: src.x + 0.5, z: src.z + 0.5 });
   if (!copy) return null;
-  copy.rot = src.rot;
+  if (!KINDS[src.kind].wall) copy.rot = src.rot;
   if (src.decor) copy.decor = src.decor;
   // Keep the copy's free spot valid with the original rotation.
   const spot = findFreeSpot(copy, saved.items, copy.x, copy.z);
@@ -525,8 +801,9 @@ export function setDeskStyle(patch: Partial<DeskStyle>): void {
   changed();
 }
 
-export function setFloor(floor: FloorKind): void {
-  saved.floor = floor;
+/** Every window changes together. */
+export function setWindowStyle(patch: Partial<WindowStyle>): void {
+  saved.windows = { ...saved.windows, ...patch };
   changed();
 }
 
@@ -538,28 +815,94 @@ export function setChairStyle(pack: ChairPack, patch: Partial<ChairStyle>): void
   changed();
 }
 
-export function setWalls(walls: WallKind): void {
-  saved.walls = walls;
+// ---------------------------------------------------------------- room edits
+
+/** Rooms with one of them swapped for `next` (a new array, so derived geometry recomputes). */
+const withRoom = (next: Room) => saved.rooms.map((r) => (r.id === next.id ? next : r));
+
+/**
+ * Why the office can't take these rooms, or null. Besides the rooms themselves, nothing that
+ * fits now may end up outside a room, in a doorway or off its wall.
+ */
+export function roomChangeProblem(rooms: readonly Room[]): string | null {
+  const p = roomsProblem(rooms);
+  if (p) return p;
+  for (const it of saved.items) {
+    if (placementProblem(it, saved.items, saved.rooms)) continue;
+    if (placementProblem(it, saved.items, rooms)) return `Se queda fuera o tapa una puerta: ${label(it.kind)}`;
+  }
+  return null;
+}
+
+export function updateRoom(id: string, patch: Partial<Omit<Room, 'id'>>): string | null {
+  const r = layoutRoom(id);
+  if (!r) return null;
+  const next = withRoom({ ...r, ...patch });
+  if ('x0' in patch || 'x1' in patch || 'z0' in patch || 'z1' in patch) {
+    const problem = roomChangeProblem(next);
+    if (problem) return problem;
+  }
+  saved.rooms = next;
   changed();
+  return null;
+}
+
+/** Glue a new parcel-sized room to one side of a room. Returns it, or why it can't go there. */
+export function addRoom(beside: string, side: Side): Room | string {
+  const r = layoutRoom(beside);
+  if (!r) return 'No hay sala';
+  let last = 'No cabe ahí';
+  for (const alignEnd of [false, true]) {
+    const rect = besideRect(r, side, alignEnd);
+    const room: Room = { ...rect, id: `r${saved.nextRoom}`, name: `Sala ${saved.nextRoom}`, floor: r.floor, walls: r.walls };
+    const problem = roomChangeProblem([...saved.rooms, room]);
+    if (problem) {
+      last = problem;
+      continue;
+    }
+    saved.nextRoom++;
+    saved.rooms = [...saved.rooms, room];
+    changed();
+    return room;
+  }
+  return last;
+}
+
+/** Can a room go on that side (used to offer the "+" there)? */
+export const canAddRoom = (beside: Room, side: Side) =>
+  [false, true].some((alignEnd) => !roomsProblem([...saved.rooms, { ...beside, ...besideRect(beside, side, alignEnd), id: '_probe' }]));
+
+/** Items that go away with a room. */
+export const roomItems = (id: string) => saved.items.filter((i) => itemRoom(i)?.id === id);
+
+/** Remove a room and what's in it. Returns why not, or null. */
+export function removeRoom(id: string): string | null {
+  if (saved.rooms.length < 2) return 'La oficina necesita al menos una sala';
+  const rest = saved.rooms.filter((r) => r.id !== id);
+  const problem = roomsProblem(rest);
+  if (problem) return 'Quitarla dejaría otra sala sin conexión';
+  const gone = new Set(roomItems(id).map((i) => i.id));
+  saved.rooms = rest;
+  saved.items = saved.items.filter((i) => !gone.has(i.id));
+  changed();
+  return null;
 }
 
 /** Undo: put back a snapshot taken with snapshotLayout(). */
 export function restoreLayout(snap: LayoutSnapshot): void {
-  saved.items = snap.items.map((i) => ({ ...i }));
-  saved.deskStyle = { ...snap.deskStyle };
-  saved.floor = snap.floor;
-  saved.walls = snap.walls;
-  saved.chairs = { desk: { ...snap.chairs.desk }, meeting: { ...snap.chairs.meeting } };
+  const copy = structuredClone(snap);
+  Object.assign(saved, copy);
   changed();
 }
 
-export const snapshotLayout = (): LayoutSnapshot => ({
-  items: saved.items.map((i) => ({ ...i })),
-  deskStyle: { ...saved.deskStyle },
-  floor: saved.floor,
-  walls: saved.walls,
-  chairs: { desk: { ...saved.chairs.desk }, meeting: { ...saved.chairs.meeting } },
-});
+export const snapshotLayout = (): LayoutSnapshot =>
+  structuredClone({
+    rooms: saved.rooms,
+    items: saved.items,
+    deskStyle: saved.deskStyle,
+    chairs: saved.chairs,
+    windows: saved.windows,
+  });
 
 export function resetLayout(): void {
   saved = fresh();
@@ -569,10 +912,11 @@ export function resetLayout(): void {
 /** Every worker needs a desk: recreate any that went missing (e.g. after a simulation reset). */
 export function ensureDesks(slots: number[]): void {
   let added = false;
+  const first = saved.rooms[0];
   for (const slot of slots) {
     if (deskBySlot(slot)) continue;
     const item: Item = { id: `i${saved.nextId++}`, kind: 'desk', x: 0, z: 0, rot: 0, slot, decor: 'plant' };
-    const spot = findFreeSpot(item, saved.items, 0, 0);
+    const spot = findFreeSpot(item, saved.items, (first.x0 + first.x1) / 2, (first.z0 + first.z1) / 2);
     if (spot) Object.assign(item, spot);
     saved.items.push(item);
     added = true;

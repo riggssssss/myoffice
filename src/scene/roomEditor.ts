@@ -2,13 +2,65 @@ import * as THREE from 'three';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { icon } from '../ui/icons';
-import { findFreeSpot, KINDS, layoutItem, layoutItems, placementProblem, snap, snapToWall, type Item, type Rect } from '../sim/layout';
-import { editSelection, isEditing, placeItem, remove, removeBlocker, selectItem } from '../ui/roomState';
+import {
+  canAddRoom,
+  findFreeSpot,
+  KINDS,
+  layoutItem,
+  layoutItems,
+  layoutRoom,
+  layoutRooms,
+  placementProblem,
+  roomOf,
+  SIDES,
+  snap,
+  snapToWall,
+  type Item,
+  type Rect,
+  type Room,
+  type RoomRect,
+  type Side,
+} from '../sim/layout';
+import {
+  addRoomBeside,
+  beginResize,
+  editRoom,
+  editSelection,
+  endResize,
+  isEditing,
+  placeItem,
+  remove,
+  removeBlocker,
+  resizeTo,
+  selectItem,
+  selectRoom,
+  snapEdge,
+} from '../ui/roomState';
 import type { Office } from './office';
 
 const OK = new THREE.Color('#2f7a5b');
 const BAD = new THREE.Color('#d0452f');
 const FAINT = new THREE.Color('#8a7f70');
+const ROOM = new THREE.Color('#2f7a5b');
+
+/** Outward direction of each side of a room, and the middle of that side. */
+const OUT: Record<Side, { x: number; z: number }> = { back: { x: 0, z: -1 }, front: { x: 0, z: 1 }, left: { x: -1, z: 0 }, right: { x: 1, z: 0 } };
+function sideMid(r: RoomRect, side: Side): THREE.Vector3 {
+  const cx = (r.x0 + r.x1) / 2;
+  const cz = (r.z0 + r.z1) / 2;
+  switch (side) {
+    case 'back':
+      return new THREE.Vector3(cx, 0.05, r.z0);
+    case 'front':
+      return new THREE.Vector3(cx, 0.05, r.z1);
+    case 'left':
+      return new THREE.Vector3(r.x0, 0.05, cz);
+    case 'right':
+      return new THREE.Vector3(r.x1, 0.05, cz);
+  }
+}
+
+const fmt = (v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(1).replace('.', ','));
 
 /** Outline + light fill of a rect, lying on the floor in an object's own frame. */
 function footprintMesh(r: Rect, color: THREE.Color, fillOpacity: number): THREE.Group {
@@ -78,6 +130,14 @@ export class RoomEditor {
   private barEl: HTMLElement;
   private barFor: string | null = null;
   private barHeight = 1;
+  /** Selected room: outline on the floor, a grip on each side, a "+" beside each free side. */
+  private roomLine: THREE.Group | null = null;
+  private roomLineKey = '';
+  private grips = {} as Record<Side, CSS2DObject>;
+  private pluses = {} as Record<Side, CSS2DObject>;
+  private sizeTag: CSS2DObject;
+  private resize: { id: string; side: Side } | null = null;
+  private tmp = new THREE.Vector3();
 
   constructor(
     private scene: THREE.Scene,
@@ -106,6 +166,39 @@ export class RoomEditor {
     this.bar.center.set(0.5, 1);
     this.bar.visible = false;
     scene.add(this.bar);
+
+    for (const side of SIDES) {
+      const grip = document.createElement('button');
+      grip.type = 'button';
+      grip.className = 'room-grip';
+      grip.setAttribute('aria-label', 'Arrastra para cambiar el tamaño de la sala');
+      grip.title = 'Arrastra para cambiar el tamaño';
+      grip.innerHTML = '<span aria-hidden="true"></span>';
+      grip.addEventListener('pointerdown', (e) => this.startResize(e, side));
+      this.grips[side] = new CSS2DObject(grip);
+      this.grips[side].visible = false;
+      scene.add(this.grips[side]);
+
+      const plus = document.createElement('button');
+      plus.type = 'button';
+      plus.className = 'room-plus';
+      plus.innerHTML = `${icon.plus(14)}<span>Sala</span>`;
+      plus.setAttribute('aria-label', 'Añadir una sala pegada a este lado');
+      plus.title = 'Añadir una sala pegada a este lado';
+      plus.addEventListener('pointerdown', (e) => e.stopPropagation());
+      plus.addEventListener('click', () => {
+        const id = editRoom();
+        if (id) addRoomBeside(id, side);
+      });
+      this.pluses[side] = new CSS2DObject(plus);
+      this.pluses[side].visible = false;
+      scene.add(this.pluses[side]);
+    }
+    const tag = document.createElement('div');
+    tag.className = 'room-size';
+    this.sizeTag = new CSS2DObject(tag);
+    this.sizeTag.visible = false;
+    scene.add(this.sizeTag);
     // Capture phase: decide before OrbitControls whether this press grabs an object.
     dom.addEventListener('pointerdown', (e) => this.onDown(e), { capture: true });
     dom.addEventListener('pointermove', (e) => this.onMove(e));
@@ -181,7 +274,11 @@ export class RoomEditor {
       x = snap(x);
       z = snap(z);
     }
-    if (info.wall) ({ x, z, rot } = snapToWall(x, z, info.footprint.w));
+    if (info.wall) {
+      const w = snapToWall(item, x, z, layoutRooms());
+      if (!w) return;
+      ({ x, z, rot } = w);
+    }
     d.to = { ...item, x, z, rot };
     const root = this.office.rootOf(d.id);
     root?.position.set(x, 0, z);
@@ -192,8 +289,14 @@ export class RoomEditor {
     if (this.downOn) {
       const { id, x, y } = this.downOn;
       this.downOn = null;
-      // A click (not an orbit): select what was under the pointer, or clear on empty floor.
-      if (Math.hypot(e.clientX - x, e.clientY - y) < 6 && isEditing()) selectItem(id);
+      // A click (not an orbit): select what was under the pointer; the floor selects its room.
+      if (Math.hypot(e.clientX - x, e.clientY - y) < 6 && isEditing()) {
+        if (id) selectItem(id);
+        else {
+          const p = this.floorPoint(e);
+          selectRoom((p && roomOf(layoutRooms(), { x: p.x, z: p.z })?.id) ?? null);
+        }
+      }
     }
     if (!this.drag) return;
     const d = this.drag;
@@ -204,7 +307,7 @@ export class RoomEditor {
     if (!d.moved) return;
     if (placeItem(d.id, { x: d.to.x, z: d.to.z, rot: d.to.rot })) return;
     // Dropped on something: settle into the nearest gap if it's close to where the pointer let go.
-    const others = layoutItems().filter((i) => i.id !== d.id) as Item[];
+    const others = layoutItems().filter((i) => i.id !== d.id);
     const gap = findFreeSpot(d.to, others, d.to.x, d.to.z);
     if (gap && Math.hypot(gap.x - d.to.x, gap.z - d.to.z) < 1.2 && placeItem(d.id, gap)) return;
     // Otherwise spring back to where the layout says it is.
@@ -225,6 +328,83 @@ export class RoomEditor {
     if (item && root) {
       root.position.set(item.x, 0, item.z);
       root.rotation.y = item.rot;
+    }
+  }
+
+  private startResize(e: PointerEvent, side: Side): void {
+    const id = editRoom();
+    if (!id || e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    beginResize(id);
+    this.resize = { id, side };
+    this.controls.enabled = false;
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => this.moveResize(ev);
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      this.resize = null;
+      this.controls.enabled = true;
+      endResize();
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  }
+
+  private moveResize(e: PointerEvent): void {
+    const d = this.resize;
+    const r = d && layoutRoom(d.id);
+    const p = r && this.floorPoint(e);
+    if (!d || !r || !p) return;
+    const next: RoomRect = { x0: r.x0, x1: r.x1, z0: r.z0, z1: r.z1 };
+    if (d.side === 'right') next.x1 = snapEdge(p.x, r.x0);
+    if (d.side === 'left') next.x0 = snapEdge(p.x, r.x1);
+    if (d.side === 'front') next.z1 = snapEdge(p.z, r.z0);
+    if (d.side === 'back') next.z0 = snapEdge(p.z, r.z1);
+    resizeTo(d.id, next);
+  }
+
+  /** Outline, grips, "+" buttons and size of the selected room. */
+  private updateRoom(room: Room | undefined): void {
+    const key = room ? `${room.id}|${room.x0}|${room.x1}|${room.z0}|${room.z1}` : '';
+    if (key !== this.roomLineKey) {
+      this.roomLineKey = key;
+      if (this.roomLine) {
+        this.scene.remove(this.roomLine);
+        disposeTree(this.roomLine);
+        this.roomLine = null;
+      }
+      if (room) {
+        const w = room.x1 - room.x0;
+        const d = room.z1 - room.z0;
+        this.roomLine = footprintMesh({ w: w - 0.2, d: d - 0.2 }, ROOM, 0.06);
+        this.roomLine.position.set((room.x0 + room.x1) / 2, 0.01, (room.z0 + room.z1) / 2);
+        this.scene.add(this.roomLine);
+        this.sizeTag.element.innerHTML = `<b>${fmt(w)} × ${fmt(d)} m</b><span>${room.name}</span>`;
+        this.sizeTag.position.set((room.x0 + room.x1) / 2, 0.05, (room.z0 + room.z1) / 2);
+      }
+    }
+    this.sizeTag.visible = !!room;
+    const resizing = !!this.resize;
+    for (const side of SIDES) {
+      const grip = this.grips[side];
+      const plus = this.pluses[side];
+      grip.visible = !!room;
+      plus.visible = !!room && !resizing && canAddRoom(room, side);
+      if (!room) continue;
+      const mid = sideMid(room, side);
+      grip.position.copy(mid);
+      plus.position.set(mid.x + OUT[side].x * 1.4, 0.05, mid.z + OUT[side].z * 1.4);
+      // Turn each grip's arrows to point across its wall as seen on screen right now.
+      const a = this.tmp.copy(mid).project(this.camera);
+      const b = mid.clone().add(new THREE.Vector3(OUT[side].x, 0, OUT[side].z)).project(this.camera);
+      const deg = (Math.atan2(-(b.y - a.y), b.x - a.x) * 180) / Math.PI;
+      grip.element.style.setProperty('--turn', `${deg.toFixed(1)}deg`);
+      grip.element.classList.toggle('is-active', this.resize?.side === side);
     }
   }
 
@@ -256,6 +436,7 @@ export class RoomEditor {
     this.ghosts.visible = on;
     const id = on ? editSelection() : null;
     const item = id ? layoutItem(id) : undefined;
+    this.updateRoom(on ? layoutRoom(editRoom()) : undefined);
 
     if (on && layoutRev !== this.ghostRev) {
       this.ghostRev = layoutRev;
@@ -295,7 +476,7 @@ export class RoomEditor {
       this.outline.rotation.y = root.rotation.y;
     }
     const probe = this.drag?.id === item.id && this.drag.moved ? this.drag.to : item;
-    const bad = !!placementProblem(probe, layoutItems() as Item[]);
+    const bad = !!placementProblem(probe, layoutItems());
     tint(this.outline, bad ? BAD : OK, bad ? 0.2 : 0.12);
     // Hide the ghost under the selection so it doesn't double up.
     for (const g of this.ghosts.children) g.visible = g.userData.itemId !== item.id;

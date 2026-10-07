@@ -333,8 +333,8 @@ export function wallThumb(kind: WallKind): string | null {
 
 const textures = new Map<FloorKind, THREE.CanvasTexture>();
 
-/** Texture for a floor of `w` × `d` metres, or null for the plain floor. */
-export function floorTexture(kind: FloorKind, w: number, d: number): THREE.CanvasTexture | null {
+/** Texture for floors whose UVs are in metres (see Office), or null for the plain floor. */
+export function floorTexture(kind: FloorKind): THREE.CanvasTexture | null {
   if (kind === 'plain') return null;
   let t = textures.get(kind);
   if (!t) {
@@ -344,8 +344,7 @@ export function floorTexture(kind: FloorKind, w: number, d: number): THREE.Canva
     t.anisotropy = 8;
     textures.set(kind, t);
   }
-  const size = DEFS[kind].size;
-  t.repeat.set(w / size, d / size);
+  t.repeat.set(1 / DEFS[kind].size, 1 / DEFS[kind].size);
   return t;
 }
 

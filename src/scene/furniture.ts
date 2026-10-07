@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { ROLES, ROLE_ORDER } from '../sim/seed';
-import { CHAIR_FABRICS, CHAIR_FRAMES, type ChairPack, type ChairStyle, type DeskStyle, type Item } from '../sim/layout';
+import { CHAIR_FABRICS, CHAIR_FRAMES, WINDOW_FRAMES, windowModel, type ChairPack, type ChairStyle, type DeskStyle, type Item, type WindowStyle } from '../sim/layout';
 import { placeComputer } from './computer';
 import { DESK_SEAT, MEETING_SEATS, meetingChair } from './navigation';
 import type { ScenePalette } from './palette';
-import { placePlant, type ChairKind, type DecorKind, type DeskKind, type PlantKind } from './plants';
+import { placePlant, type ChairKind, type DecorKind, type DeskKind, type PlantKind, type WindowKind } from './plants';
 
 /** Models that arrive after start-up; until then each object shows a simple stand-in. */
 export interface Assets {
@@ -13,6 +13,7 @@ export interface Assets {
   chairs: Map<ChairKind, THREE.Object3D> | null;
   plants: Map<PlantKind, THREE.Object3D> | null;
   decor: Map<DecorKind, THREE.Object3D> | null;
+  windows: Map<WindowKind, THREE.Object3D> | null;
 }
 
 export type MatFn = (slot: keyof ScenePalette, extra?: THREE.MeshStandardMaterialParameters) => THREE.MeshStandardMaterial;
@@ -65,16 +66,12 @@ function deskPlant(m: MatFn, assets: Assets, height: number): THREE.Object3D {
 }
 
 const PLANT_HEIGHT: Record<string, number> = {
-  plantTallA: 1.9,
-  plantTallB: 2.0,
   plantLowA: 1.35,
   plantLowB: 1.25,
   wickerVase: 0.72,
   bush: 1.0,
 };
 const PLANT_MODEL: Record<string, PlantKind> = {
-  plantTallA: 'PlantTallA',
-  plantTallB: 'PlantTallB',
   plantLowA: 'PlantLowA',
   plantLowB: 'PlantLowB',
 };
@@ -178,7 +175,7 @@ function chairFrame(c: ChairStyle, m: MatFn): THREE.Material {
  * One chair of a pack, facing +z, centred on its seat, standing on y = 0.
  * The classic chair is the original block chair (bigger at desks, lighter at the table).
  */
-function placeChair(c: ChairStyle, pack: ChairPack, m: MatFn, assets: Assets): THREE.Group {
+export function placeChair(c: ChairStyle, pack: ChairPack, m: MatFn, assets: Assets): THREE.Group {
   const g = new THREE.Group();
   const fabric = fabricMaterial(c, m);
   const frame = chairFrame(c, m);
@@ -217,6 +214,7 @@ function placeChair(c: ChairStyle, pack: ChairPack, m: MatFn, assets: Assets): T
 export interface RoomLook {
   desk: DeskStyle;
   chairs: Record<ChairPack, ChairStyle>;
+  windows: WindowStyle;
 }
 
 export function buildItem(item: Item, m: MatFn, assets: Assets, look: RoomLook): Built {
@@ -230,8 +228,8 @@ export function buildItem(item: Item, m: MatFn, assets: Assets, look: RoomLook):
     case 'meeting':
       buildMeeting(g, m, assets, look.chairs.meeting);
       break;
-    case 'coffee':
-      buildCoffee(g, m, assets);
+    case 'window':
+      buildWindow(g, assets, look.windows);
       break;
     case 'shelf':
       buildShelf(g, m);
@@ -248,23 +246,27 @@ export function buildItem(item: Item, m: MatFn, assets: Assets, look: RoomLook):
   return out;
 }
 
-function buildDesk(g: THREE.Group, item: Item, m: MatFn, assets: Assets, out: Built, style: DeskStyle, chairStyle: ChairStyle): void {
+/** The desk alone (classic, or an Ogi once loaded), top at 0.77. */
+export function deskObject(style: DeskStyle, m: MatFn, assets: Assets): THREE.Object3D {
   const model = style.model === 'ogiM' ? 'OgiM' : style.model === 'ogiY' ? 'OgiY' : null;
   const template = model ? assets.desks?.get(model) : undefined;
-  if (template) {
-    g.add(placeOgi(template, style, m));
-  } else {
-    // Classic desk (also the stand-in while the Ogi models load).
-    g.add(box(2.4, 0.06, 1.0, topMaterial(style, m), 0, 0.74, 0));
-    for (const [lx, lz] of [
-      [-1.1, -0.42],
-      [1.1, -0.42],
-      [-1.1, 0.42],
-      [1.1, 0.42],
-    ]) {
-      g.add(box(0.05, 0.71, 0.05, frameMaterial(style, m), lx, 0.355, lz));
-    }
+  if (template) return placeOgi(template, style, m);
+  // Classic desk (also the stand-in while the Ogi models load).
+  const g = new THREE.Group();
+  g.add(box(2.4, 0.06, 1.0, topMaterial(style, m), 0, 0.74, 0));
+  for (const [lx, lz] of [
+    [-1.1, -0.42],
+    [1.1, -0.42],
+    [-1.1, 0.42],
+    [1.1, 0.42],
+  ]) {
+    g.add(box(0.05, 0.71, 0.05, frameMaterial(style, m), lx, 0.355, lz));
   }
+  return g;
+}
+
+function buildDesk(g: THREE.Group, item: Item, m: MatFn, assets: Assets, out: Built, style: DeskStyle, chairStyle: ChairStyle): void {
+  g.add(deskObject(style, m, assets));
 
   // Screen material: the scene lights it in the colour of whoever works here.
   const screen = new THREE.MeshStandardMaterial({ color: '#111', roughness: 0.4, emissive: '#000' });
@@ -324,21 +326,6 @@ function buildMeeting(g: THREE.Group, m: MatFn, assets: Assets, chairStyle: Chai
   }
 }
 
-function buildCoffee(g: THREE.Group, m: MatFn, assets: Assets): void {
-  g.add(box(3.0, 0.92, 0.6, m('woodDark'), 0, 0.46, 0));
-  g.add(box(3.1, 0.05, 0.66, m('wood'), 0, 0.945, 0));
-  // Espresso machine.
-  g.add(box(0.5, 0.48, 0.38, m('monitor'), -0.7, 1.21, 0));
-  g.add(box(0.36, 0.06, 0.12, m('metal'), -0.7, 1.08, -0.2));
-  // Mugs.
-  ROLE_ORDER.slice(0, 4).forEach((role, k) => {
-    g.add(cyl(0.055, 0.05, 0.11, accent(ROLES[role].color), 0.1 + k * 0.22, 1.025, -0.05, 12));
-  });
-  const plant = deskPlant(m, assets, 0.32);
-  plant.position.set(1.2, 0.97, 0.05);
-  g.add(plant);
-}
-
 function buildShelf(g: THREE.Group, m: MatFn): void {
   g.add(box(0.4, 1.9, 0.06, m('woodDark'), 0, 0.95, -1.2));
   g.add(box(0.4, 1.9, 0.06, m('woodDark'), 0, 0.95, 1.2));
@@ -367,4 +354,47 @@ function buildWhiteboard(g: THREE.Group, m: MatFn): void {
       g.add(note);
     }
   });
+}
+
+// ---------------------------------------------------------------- windows
+
+const glass = () =>
+  finish('window:glass', () => ({ color: '#cfe3ee', roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide }));
+
+function windowFrame(style: WindowStyle): THREE.MeshStandardMaterial {
+  const color = WINDOW_FRAMES.find((f) => f.id === style.frame)!.color;
+  return finish(`window:frame:${style.frame}`, () => ({ color, roughness: style.frame === 'alu' ? 0.35 : 0.6, metalness: style.frame === 'alu' ? 0.5 : 0.05 }));
+}
+
+/**
+ * A window set into an outside wall (the wall cuts the hole). Every window shares one design:
+ * the user's slider or door window, or a simple frame while the models load.
+ */
+export function buildWindow(g: THREE.Group, assets: Assets, style: WindowStyle): void {
+  const frame = windowFrame(style);
+  const template = assets.windows?.get(style.model === 'door' ? 'DoorWindow' : 'Window');
+  if (template) {
+    const win = template.clone(true);
+    const handle = finish('window:handle', () => ({ color: '#b9bcc0', roughness: 0.3, metalness: 0.7 }));
+    win.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const name = (o.material as THREE.Material).name;
+      o.material = name === 'glass' ? glass() : name === 'handle' ? handle : frame;
+      o.castShadow = name !== 'glass';
+    });
+    win.position.set(0, 0, 0);
+    g.add(win);
+    return;
+  }
+  const w = windowModel(style.model);
+  const h = w.head - w.sill;
+  const t = 0.06;
+  g.add(box(w.width, t, 0.09, frame, 0, w.sill + t / 2, 0));
+  g.add(box(w.width, t, 0.09, frame, 0, w.head - t / 2, 0));
+  g.add(box(t, h, 0.09, frame, -w.width / 2 + t / 2, w.sill + h / 2, 0));
+  g.add(box(t, h, 0.09, frame, w.width / 2 - t / 2, w.sill + h / 2, 0));
+  g.add(box(t, h, 0.07, frame, 0, w.sill + h / 2, 0));
+  const pane = new THREE.Mesh(new THREE.PlaneGeometry(w.width - t * 2, h - t * 2), glass());
+  pane.position.set(0, w.sill + h / 2, 0);
+  g.add(pane);
 }

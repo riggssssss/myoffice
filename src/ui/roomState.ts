@@ -1,19 +1,26 @@
 import {
   addItem,
+  addRoom,
   duplicateItem,
   KINDS,
   layoutItem,
   layoutItems,
+  layoutRoom,
+  layoutRooms,
+  PARCEL,
   placementProblem,
   removeItem,
+  removeRoom,
   resetLayout,
   restoreLayout,
+  roomItems,
+  ROOM_GRID,
   snapshotLayout,
   updateItem,
+  updateRoom,
   setDeskStyle,
-  setFloor,
-  setWalls,
   setChairStyle,
+  setWindowStyle,
   type ChairPack,
   type ChairStyle,
   type FloorKind,
@@ -24,17 +31,23 @@ import {
   type Item,
   type ItemKind,
   type P,
+  type RoomRect,
+  type Side,
+  type WindowStyle,
 } from '../sim/layout';
 import { getState } from '../sim/store';
 
 /**
- * Room editor session: which object is selected, the undo history, and every edit as an
- * action that checks the result fits before it lands.
+ * Room editor session: what is selected (an object or a room), the undo history, and every
+ * edit as an action that checks the result fits before it lands.
  */
 let active = false;
 let selectedId: string | null = null;
+let selectedRoom: string | null = null;
 /** Last thing that didn't work ("Choca con…"), shown in the panel until the next action. */
 let message: string | null = null;
+/** Room resizing: half-metre steps, or whole parcels. */
+let parcelSnap = false;
 const undo: LayoutSnapshot[] = [];
 const listeners = new Set<() => void>();
 
@@ -42,8 +55,10 @@ const emit = () => listeners.forEach((fn) => fn());
 
 export const isEditing = () => active;
 export const editSelection = () => selectedId;
+export const editRoom = () => selectedRoom;
 export const editMessage = () => message;
 export const canUndo = () => undo.length > 0;
+export const snapsToParcels = () => parcelSnap;
 
 export function onEditChange(fn: () => void): () => void {
   listeners.add(fn);
@@ -54,15 +69,30 @@ export function setEditing(on: boolean): void {
   if (active === on) return;
   active = on;
   selectedId = null;
+  selectedRoom = null;
   message = null;
   undo.length = 0;
   emit();
 }
 
 export function selectItem(id: string | null): void {
-  if (selectedId === id && !message) return;
+  if (selectedId === id && !selectedRoom && !message) return;
   selectedId = id;
+  selectedRoom = null;
   message = null;
+  emit();
+}
+
+export function selectRoom(id: string | null): void {
+  if (selectedRoom === id && !selectedId && !message) return;
+  selectedRoom = id;
+  selectedId = null;
+  message = null;
+  emit();
+}
+
+export function setParcelSnap(on: boolean): void {
+  parcelSnap = on;
   emit();
 }
 
@@ -82,7 +112,7 @@ export function placeItem(id: string, to: { x: number; z: number; rot: number })
   const item = layoutItem(id);
   if (!item) return false;
   if (item.x === to.x && item.z === to.z && item.rot === to.rot) return true;
-  const problem = placementProblem({ ...item, ...to }, layoutItems() as Item[]);
+  const problem = placementProblem({ ...item, ...to }, layoutItems());
   if (problem) return fail(problem);
   remember();
   message = null;
@@ -112,10 +142,11 @@ export function addKind(kind: ItemKind, near: P): void {
   const item = addItem(kind, near);
   if (!item) {
     undo.pop();
-    fail('No queda sitio libre en la sala');
+    fail(KINDS[kind].wall ? 'No queda pared libre para colgarla' : 'No queda sitio libre en la oficina');
     return;
   }
   selectedId = item.id;
+  selectedRoom = null;
   message = null;
   emit();
 }
@@ -172,15 +203,9 @@ export function styleDesks(patch: Partial<DeskStyle>): void {
   emit();
 }
 
-export function floorFinish(floor: FloorKind): void {
+export function styleWindows(patch: Partial<WindowStyle>): void {
   remember();
-  setFloor(floor);
-  emit();
-}
-
-export function wallFinish(walls: WallKind): void {
-  remember();
-  setWalls(walls);
+  setWindowStyle(patch);
   emit();
 }
 
@@ -190,11 +215,146 @@ export function styleChairs(pack: ChairPack, patch: Partial<ChairStyle>): void {
   emit();
 }
 
+// ---------------------------------------------------------------- rooms
+
+export function floorFinish(roomId: string, floor: FloorKind): void {
+  remember();
+  updateRoom(roomId, { floor });
+  emit();
+}
+
+export function wallFinish(roomId: string, walls: WallKind): void {
+  remember();
+  updateRoom(roomId, { walls });
+  emit();
+}
+
+export function renameRoom(roomId: string, name: string): void {
+  const clean = name.trim().slice(0, 40);
+  if (!clean || layoutRoom(roomId)?.name === clean) return;
+  remember();
+  updateRoom(roomId, { name: clean });
+  emit();
+}
+
+/** Why a room can't go, or null. */
+export function roomRemoveBlocker(roomId: string): string | null {
+  if (layoutRooms().length < 2) return 'La oficina necesita al menos una sala';
+  const inside = roomItems(roomId);
+  const owned = inside.map(deskOwner).find(Boolean);
+  if (owned) return `Aquí está el puesto de ${owned.name}: muévelo a otra sala antes`;
+  if (inside.some((i) => KINDS[i.kind].unique)) return 'Aquí está la mesa de reuniones: muévela a otra sala antes';
+  return null;
+}
+
+export function dropRoom(roomId: string): void {
+  const why = roomRemoveBlocker(roomId);
+  if (why) {
+    fail(why);
+    return;
+  }
+  remember();
+  const problem = removeRoom(roomId);
+  if (problem) {
+    undo.pop();
+    fail(problem);
+    return;
+  }
+  selectedRoom = null;
+  message = null;
+  emit();
+}
+
+export function addRoomBeside(roomId: string, side: Side): void {
+  remember();
+  const r = addRoom(roomId, side);
+  if (typeof r === 'string') {
+    undo.pop();
+    fail(r);
+    return;
+  }
+  selectedRoom = r.id;
+  selectedId = null;
+  message = null;
+  emit();
+}
+
+/** Grid a dragged room edge snaps to: half metres, or whole parcels counted from the opposite edge. */
+export function snapEdge(value: number, opposite: number): number {
+  if (!parcelSnap) return Math.round(value / ROOM_GRID) * ROOM_GRID;
+  const n = Math.max(1, Math.round(Math.abs(value - opposite) / PARCEL));
+  return opposite + Math.sign(value - opposite || 1) * n * PARCEL;
+}
+
+let resizing: { id: string; changed: boolean } | null = null;
+
+/** Start dragging a room edge: one undo step for the whole drag. */
+export function beginResize(roomId: string): void {
+  remember();
+  resizing = { id: roomId, changed: false };
+  message = null;
+}
+
+/** Live resize while dragging; refuses (keeping the last good size) when it wouldn't fit. */
+export function resizeTo(roomId: string, rect: RoomRect): boolean {
+  const r = layoutRoom(roomId);
+  if (!r) return false;
+  if (r.x0 === rect.x0 && r.x1 === rect.x1 && r.z0 === rect.z0 && r.z1 === rect.z1) return true;
+  const problem = updateRoom(roomId, rect);
+  if (problem) {
+    if (message !== problem) fail(problem);
+    return false;
+  }
+  if (resizing?.id === roomId) resizing.changed = true;
+  if (message) {
+    message = null;
+    emit();
+  }
+  return true;
+}
+
+export function endResize(): void {
+  if (resizing && !resizing.changed) undo.pop();
+  resizing = null;
+  emit();
+}
+
+/** Panel steppers: grow or shrink a room along one axis (from its far edge, else its near edge). */
+export function stepRoom(roomId: string, axis: 'x' | 'z', dir: 1 | -1): void {
+  const r = layoutRoom(roomId);
+  if (!r) return;
+  const step = parcelSnap ? PARCEL : 1;
+  const tries: RoomRect[] =
+    axis === 'x'
+      ? [
+          { ...r, x1: r.x1 + dir * step },
+          { ...r, x0: r.x0 - dir * step },
+        ]
+      : [
+          { ...r, z1: r.z1 + dir * step },
+          { ...r, z0: r.z0 - dir * step },
+        ];
+  remember();
+  let problem: string | null = null;
+  for (const t of tries) {
+    problem = updateRoom(roomId, { x0: t.x0, x1: t.x1, z0: t.z0, z1: t.z1 });
+    if (!problem) break;
+  }
+  if (problem) {
+    undo.pop();
+    fail(problem);
+    return;
+  }
+  message = null;
+  emit();
+}
+
 export function undoLast(): void {
   const prev = undo.pop();
   if (!prev) return;
   restoreLayout(prev);
   if (selectedId && !layoutItem(selectedId)) selectedId = null;
+  if (selectedRoom && !layoutRoom(selectedRoom)) selectedRoom = null;
   message = null;
   emit();
 }
@@ -203,6 +363,7 @@ export function resetRoom(): void {
   remember();
   resetLayout();
   selectedId = null;
+  selectedRoom = null;
   message = null;
   emit();
 }

@@ -6,11 +6,11 @@ import type { ScenePalette } from './palette';
 /**
  * User-supplied plant models, converted to GLB. Every node is 1 unit tall, rests on
  * y = 0 and is centred on its pot.
- * - plants.glb: bird-of-paradise in four arrangements (the tall pair stand on a marble plinth).
+ * - plants.glb: bird-of-paradise; the two low arrangements are used.
  * - decor.glb: wicker basket, bush in a pot, and a leafy desk plant.
  * (desks.glb shares the loader but keeps real size; see loadDesks.)
  */
-const PLANT_KINDS = ['PlantTallA', 'PlantTallB', 'PlantLowA', 'PlantLowB'] as const;
+const PLANT_KINDS = ['PlantLowA', 'PlantLowB'] as const;
 export type PlantKind = (typeof PLANT_KINDS)[number];
 const DECOR_KINDS = ['WickerVase', 'BushPlant', 'DeskPlant'] as const;
 export type DecorKind = (typeof DECOR_KINDS)[number];
@@ -18,6 +18,8 @@ const DESK_KINDS = ['OgiM', 'OgiY'] as const;
 export type DeskKind = (typeof DESK_KINDS)[number];
 const CHAIR_KINDS = ['Renya', 'Sava', 'Roundish'] as const;
 export type ChairKind = (typeof CHAIR_KINDS)[number];
+const WINDOW_KINDS = ['Window', 'DoorWindow'] as const;
+export type WindowKind = (typeof WINDOW_KINDS)[number];
 
 /** Material name in the GLB → palette slot, so the plants follow day/night like the rest of the room. */
 const SLOTS: Record<string, keyof ScenePalette> = {
@@ -60,6 +62,11 @@ export const loadDecor = () => loadNodes('decor.glb', DECOR_KINDS);
 export const loadDesks = () => loadNodes('desks.glb', DESK_KINDS);
 /** Chairs (user-supplied .blend / .fbx, converted): real size, facing +z, centred, on y = 0. */
 export const loadChairs = () => loadNodes('chairs.glb', CHAIR_KINDS);
+/**
+ * Windows (user-supplied .fbx, converted): a two-leaf slider and a floor-length door window,
+ * real size, centred on the opening and the frame depth, y = 0 at floor level.
+ */
+export const loadWindows = () => loadNodes('windows.glb', WINDOW_KINDS);
 
 /** A themed copy of one plant, `height` tall, with materials taken from the shared palette set. */
 export function placePlant(
