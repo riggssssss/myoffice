@@ -3,6 +3,8 @@
  * movable object in them. The scene builds meshes from it, navigation derives walkable floor,
  * doors and seats from it, the room editor edits it.
  */
+import { DIRECTOR_SLOT } from './seed';
+import { readPref, savePref } from './prefs';
 
 /** Wall thickness and height. Walls straddle the room edges. */
 export const WALL_T = 0.12;
@@ -20,7 +22,20 @@ export const DOOR_H = 2.15;
 /** Shared wall needed for a doorway (door plus a bit of wall each side). */
 export const JOIN_MIN = DOOR_W + 0.4;
 
-export type ItemKind = 'desk' | 'meeting' | 'shelf' | 'whiteboard' | 'window' | 'plantLowA' | 'plantLowB' | 'wickerVase' | 'bush';
+export type ItemKind =
+  | 'desk'
+  | 'meeting'
+  | 'shelf'
+  | 'sofa'
+  | 'rug'
+  | 'whiteboard'
+  | 'calendar'
+  | 'window'
+  | 'entrance'
+  | 'plantLowA'
+  | 'plantLowB'
+  | 'wickerVase'
+  | 'bush';
 
 export type DeskDecor = 'plant' | 'books' | 'none';
 
@@ -60,12 +75,17 @@ export interface KindInfo {
   inset?: number;
   /** The office needs exactly one: it can move but not be removed or copied. */
   unique?: boolean;
+  /** One per agent: comes and goes with them (see syncDesks), can move but not be added or removed by hand. */
+  perWorker?: boolean;
+  /** Lies on the floor (a rug): furniture can stand on it and people walk over it. */
+  flat?: boolean;
 }
 
 export const KINDS: Record<ItemKind, KindInfo> = {
   desk: {
     label: 'Puesto de trabajo',
     category: 'Mobiliario',
+    perWorker: true,
     footprint: { w: 2.4, d: 2.15, cz: -0.55 },
     solid: [{ w: 2.4, d: 1.0 }],
   },
@@ -77,19 +97,26 @@ export const KINDS: Record<ItemKind, KindInfo> = {
     unique: true,
   },
   shelf: { label: 'Estantería', category: 'Mobiliario', footprint: { w: 0.45, d: 2.5 } },
+  /** Laszlo bouclé loveseat (user-supplied .obj, converted): 2.03 × 0.99 m, seat facing +z. */
+  /** Wool rug, "Maze" weave (user-supplied textures). */
+  rug: { label: 'Alfombra de lana', category: 'Mobiliario', footprint: { w: 2.4, d: 1.7 }, flat: true },
+  sofa: { label: 'Sofá Laszlo', category: 'Mobiliario', footprint: { w: 2.1, d: 1.0 }, solid: [{ w: 2.1, d: 0.5, cz: -0.25 }] },
   plantLowA: { label: 'Ave del paraíso', category: 'Plantas', footprint: { w: 0.7, d: 0.7 } },
   plantLowB: { label: 'Ave del paraíso II', category: 'Plantas', footprint: { w: 0.7, d: 0.7 } },
   wickerVase: { label: 'Cesta de mimbre', category: 'Plantas', footprint: { w: 0.75, d: 0.75 } },
   bush: { label: 'Arbusto en maceta', category: 'Plantas', footprint: { w: 0.65, d: 0.65 } },
   window: { label: 'Ventana', category: 'Pared', footprint: { w: 2.2, d: 0.1 }, wall: true, inset: 0 },
+  entrance: { label: 'Puerta de entrada', category: 'Pared', footprint: { w: 1.5, d: 0.1 }, wall: true, inset: 0, unique: true },
   whiteboard: { label: 'Pizarra', category: 'Pared', footprint: { w: 2.8, d: 0.1 }, wall: true, inset: HALF + 0.03 },
+  /** Shows this month's plans; clicking it opens the calendar. */
+  calendar: { label: 'Calendario', category: 'Pared', footprint: { w: 1.3, d: 0.1 }, wall: true, inset: HALF + 0.03 },
 };
 
 export const KIND_ORDER = Object.keys(KINDS) as ItemKind[];
 
 /** One look for every desk in the office ("Personalizar mesas"). */
 export type DeskModel = 'classic' | 'ogiM' | 'ogiY';
-export type DeskTop = 'theme' | 'oak' | 'walnut' | 'white' | 'grey';
+export type DeskTop = 'theme' | 'oak' | 'walnut' | 'smoked' | 'ebony' | 'white' | 'grey';
 export type DeskFrame = 'theme' | 'black' | 'white' | 'alu';
 export interface DeskStyle {
   model: DeskModel;
@@ -97,12 +124,28 @@ export interface DeskStyle {
   frame: DeskFrame;
 }
 /** Floor finish of one room. 'plain' is the original flat floor. */
-export type FloorKind = 'plain' | 'oak' | 'walnut' | 'herringbone' | 'tiles' | 'concrete' | 'terrazzo' | 'carpet';
+export type FloorKind =
+  | 'plain'
+  | 'oak'
+  | 'walnut'
+  | 'walnutRed'
+  | 'smoked'
+  | 'ebony'
+  | 'herringbone'
+  | 'herringboneSmoked'
+  | 'tiles'
+  | 'concrete'
+  | 'terrazzo'
+  | 'carpet';
 export const FLOORS: { id: FloorKind; label: string }[] = [
   { id: 'plain', label: 'Liso (el de siempre)' },
-  { id: 'oak', label: 'Tablón de roble' },
-  { id: 'walnut', label: 'Tablón de nogal' },
-  { id: 'herringbone', label: 'Espiga' },
+  { id: 'oak', label: 'Tablón de nogal miel' },
+  { id: 'walnut', label: 'Tablón de nogal natural' },
+  { id: 'walnutRed', label: 'Tablón de nogal rojizo' },
+  { id: 'smoked', label: 'Tablón de nogal ahumado' },
+  { id: 'ebony', label: 'Tablón de nogal negro' },
+  { id: 'herringbone', label: 'Espiga de nogal miel' },
+  { id: 'herringboneSmoked', label: 'Espiga de nogal ahumado' },
   { id: 'tiles', label: 'Baldosa de piedra' },
   { id: 'concrete', label: 'Microcemento' },
   { id: 'terrazzo', label: 'Terrazo' },
@@ -110,13 +153,29 @@ export const FLOORS: { id: FloorKind; label: string }[] = [
 ];
 
 /** Finish on the inside of one room's walls. 'plain' is the original cream wall. */
-export type WallKind = 'plain' | 'sage' | 'terracotta' | 'mist' | 'slats' | 'brick' | 'concrete' | 'stripes';
+export type WallKind =
+  | 'plain'
+  | 'sage'
+  | 'terracotta'
+  | 'mist'
+  | 'slats'
+  | 'slatsDark'
+  | 'panelNatural'
+  | 'panelSmoked'
+  | 'panelRed'
+  | 'brick'
+  | 'concrete'
+  | 'stripes';
 export const WALLS: { id: WallKind; label: string }[] = [
   { id: 'plain', label: 'Liso (el de siempre)' },
   { id: 'sage', label: 'Pintura verde salvia' },
   { id: 'terracotta', label: 'Pintura terracota' },
   { id: 'mist', label: 'Pintura azul niebla' },
-  { id: 'slats', label: 'Listones de roble' },
+  { id: 'slats', label: 'Listones de nogal miel' },
+  { id: 'slatsDark', label: 'Listones de nogal negro' },
+  { id: 'panelNatural', label: 'Panel de nogal natural' },
+  { id: 'panelSmoked', label: 'Panel de nogal ahumado' },
+  { id: 'panelRed', label: 'Panel de nogal rojizo' },
   { id: 'brick', label: 'Ladrillo pintado' },
   { id: 'concrete', label: 'Microcemento' },
   { id: 'stripes', label: 'Papel a rayas' },
@@ -205,9 +264,11 @@ export const DESK_MODELS: { id: DeskModel; label: string; note: string }[] = [
   { id: 'ogiY', label: 'Ogi Y', note: 'Regulable en altura' },
 ];
 export const DESK_TOPS: { id: DeskTop; label: string; color: string }[] = [
-  { id: 'theme', label: 'Madera clara (la de siempre)', color: '#d3bf9f' },
-  { id: 'oak', label: 'Roble natural', color: '#d2ae7c' },
-  { id: 'walnut', label: 'Nogal', color: '#7b5539' },
+  { id: 'theme', label: 'Nogal miel (la de siempre)', color: '#be9067' },
+  { id: 'oak', label: 'Nogal natural', color: '#7b6042' },
+  { id: 'walnut', label: 'Nogal rojizo', color: '#6a3914' },
+  { id: 'smoked', label: 'Nogal ahumado', color: '#846450' },
+  { id: 'ebony', label: 'Nogal negro', color: '#2b2724' },
   { id: 'white', label: 'Blanco', color: '#eeebe4' },
   { id: 'grey', label: 'Gris', color: '#8f8b84' },
 ];
@@ -223,6 +284,9 @@ export const DESK_DECOR: { id: DeskDecor; label: string }[] = [
   { id: 'books', label: 'Libros' },
   { id: 'none', label: 'Nada' },
 ];
+
+/** The way in from outside: the opening it cuts, and the floor kept clear inside it. */
+export const ENTRANCE = { width: 1.1, head: 2.15, clear: 1.4 };
 
 /** Every window in the office shares one design; each one is placed on its own. */
 export type WindowModel = 'slider' | 'door';
@@ -244,6 +308,43 @@ export const WINDOW_FRAMES: { id: string; label: string; color: string }[] = [
 ];
 export const DEFAULT_WINDOW_STYLE: WindowStyle = { model: 'slider', frame: 'white' };
 export const windowModel = (id: WindowModel) => WINDOW_MODELS.find((m) => m.id === id)!;
+
+/** Round the building: what the ground is, and what the sky is like (its light and its clouds). */
+export type GroundKind = 'none' | 'grass';
+export type SkyKind = 'auto' | 'clear' | 'overcast' | 'rain' | 'storm';
+/** The street furniture in the garden: which bench by the path, which lamp along the pavement. */
+export type BenchModel = 'maro' | 'park';
+export type LampModel = 'modern' | 'lantern' | 'lantern2' | 'globes2' | 'globes3' | 'crook';
+export interface OutdoorStyle {
+  ground: GroundKind;
+  sky: SkyKind;
+  bench: BenchModel;
+  lamp: LampModel;
+}
+export const BENCHES: { id: BenchModel; label: string; note: string }[] = [
+  { id: 'maro', label: 'Piedra y madera', note: 'Laterales de piedra artificial, listones de madera' },
+  { id: 'park', label: 'Parque', note: 'Hierro forjado y listones de madera' },
+];
+export const LAMPS: { id: LampModel; label: string; note: string }[] = [
+  { id: 'modern', label: 'Moderna', note: 'Poste liso con el brazo sobre la calzada' },
+  { id: 'lantern', label: 'Farol', note: 'Un farol clásico en lo alto' },
+  { id: 'lantern2', label: 'Doble farol', note: 'Dos faroles colgados de volutas' },
+  { id: 'globes2', label: 'Dos globos', note: 'Dos globos de cristal sobre volutas' },
+  { id: 'globes3', label: 'Tres globos', note: 'Candelabro de tres globos' },
+  { id: 'crook', label: 'Báculo', note: 'Poste alto curvado con la lámpara colgando' },
+];
+export const GROUNDS: { id: GroundKind; label: string; note: string }[] = [
+  { id: 'none', label: 'Por defecto', note: 'La maqueta sola sobre la mesa' },
+  { id: 'grass', label: 'Césped', note: 'Jardín con árboles, un camino hasta la puerta y la calle' },
+];
+export const SKIES: { id: SkyKind; label: string; note: string }[] = [
+  { id: 'auto', label: 'Auto', note: 'El tiempo que hace ahora donde estás' },
+  { id: 'clear', label: 'Despejado', note: 'Sol y alguna nube que pasa' },
+  { id: 'overcast', label: 'Nublado', note: 'Luz suave, el sol asoma a ratos' },
+  { id: 'rain', label: 'Lluvia', note: 'Suelo mojado y charcos' },
+  { id: 'storm', label: 'Tormenta', note: 'Aguacero, rayos y más charcos' },
+];
+export const DEFAULT_OUTDOOR: OutdoorStyle = { ground: 'grass', sky: 'auto', bench: 'maro', lamp: 'modern' };
 
 // ---------------------------------------------------------------- rooms
 
@@ -562,12 +663,18 @@ export function placementProblem(item: Item, items: readonly Item[], rooms: read
   const inside = (p: P) => room && p.x >= room.x0 + HALF - 0.01 && p.x <= room.x1 - HALF + 0.01 && p.z >= room.z0 + HALF - 0.01 && p.z <= room.z1 - HALF + 0.01;
   if (!room || !mine.every(inside)) return 'Se sale de la sala';
   for (const zone of roomGeometry(rooms).doorZones) if (overlaps(mine, zone)) return 'Tapa una puerta';
+  for (const door of items) if (door.kind === 'entrance' && overlaps(mine, entranceZone(door))) return 'Tapa la puerta de entrada';
   for (const other of items) {
     if (other.id === item.id || KINDS[other.kind].wall) continue;
+    // A rug lies under things: nothing collides with it.
+    if (info.flat || KINDS[other.kind].flat) continue;
     if (overlaps(mine, corners(other, KINDS[other.kind].footprint))) return `Choca con: ${label(other.kind)}`;
   }
   return null;
 }
+
+/** Floor kept clear just inside the entrance, so people can come and go. */
+export const entranceZone = (door: Pick<Item, 'x' | 'z' | 'rot'>) => corners(door, { w: ENTRANCE.width + 0.4, d: ENTRANCE.clear, cz: ENTRANCE.clear / 2 });
 
 /** Nearest free spot to (x, z) for an item, searching outwards; null if the office is full. */
 export function findFreeSpot(item: Item, items: readonly Item[], x: number, z: number, pad = 0, rooms: readonly Room[] = saved.rooms): { x: number; z: number; rot: number } | null {
@@ -597,13 +704,31 @@ export const snap = (v: number, grid = GRID) => Math.round(v / grid) * grid;
 
 // ---------------------------------------------------------------- default office
 
-/** Two parcels side by side: the team's room and the meeting room, joined by a doorway. */
+/**
+ * The team's room, a reception with the way in, then the meeting room and below it the head's
+ * own office, both ending on the same right-hand side. Everything lines up front and back with the team's room.
+ */
 function seedRooms(): Room[] {
   const h = PARCEL / 2;
   return [
     { id: 'r1', name: 'Zona de trabajo', x0: -PARCEL, z0: -h, x1: 0, z1: h, floor: 'plain', walls: 'plain' },
-    { id: 'r2', name: 'Sala de reuniones', x0: 0, z0: -h, x1: PARCEL, z1: h, floor: 'plain', walls: 'plain' },
+    { id: 'r2', name: 'Recepción', x0: 0, z0: -h, x1: 4, z1: h, floor: 'plain', walls: 'plain' },
+    { id: 'r3', name: 'Sala de reuniones', x0: 4, z0: -h, x1: 10, z1: 0.5, floor: 'plain', walls: 'plain' },
+    { id: 'r4', name: 'Despacho de dirección', x0: 4, z0: 0.5, x1: 10, z1: h, floor: 'plain', walls: 'plain' },
   ];
+}
+
+/**
+ * The house rule for agents' desks: two columns of three in the team room, facing the front,
+ * filled from the windows forward. Spots taken or outside the rooms are skipped.
+ */
+const DESK_SPOTS: readonly { x: number; z: number; rot: number }[] = [-2.5, 0.5, 3.5].flatMap((z) =>
+  [-6.6, -2.9].map((x) => ({ x, z, rot: 0 })),
+);
+
+/** Where the house rule puts this desk, or null when every default spot is taken. */
+function defaultDeskSpot(item: Item, items: readonly Item[], rooms: readonly Room[]): { x: number; z: number; rot: number } | null {
+  return DESK_SPOTS.find((s) => !placementProblem({ ...item, ...s }, items, rooms)) ?? null;
 }
 
 function seedItems(): Item[] {
@@ -612,39 +737,41 @@ function seedItems(): Item[] {
   const add = (kind: ItemKind, x: number, z: number, rot = 0, extra: Partial<Item> = {}) =>
     items.push({ id: `i${++n}`, kind, x, z, rot, ...extra });
   const h = PARCEL / 2;
-  const back = -h + KINDS.whiteboard.inset!;
 
-  // Two benches of three desks facing each other, a walkway all round.
-  for (let i = 0; i < 6; i++) {
-    const col = i % 3;
-    const row = Math.floor(i / 3);
-    add('desk', -6.9 + col * 2.4, row === 0 ? -1.25 : 1.25, row === 0 ? 0 : Math.PI, {
-      slot: i,
-      decor: i % 2 ? 'plant' : 'books',
-    });
-  }
-  add('meeting', 4.5, 0);
-  add('whiteboard', 4.5, back);
-  add('shelf', PARCEL - 0.35, -2.4);
-  // Windows: two at the back of the team room, one on each side wall, one at the front.
+  // The head's desk, in their office; agents' desks follow the house rule (DESK_SPOTS).
+  add('desk', 7, 2.75, Math.PI, { slot: DIRECTOR_SLOT, decor: 'books' });
+  add('entrance', 2, h, Math.PI);
+  add('meeting', 7, -2);
+  // Reception: the sofa against the wall between the doors to the meeting room and the head's office.
+  add('sofa', 3.4, 0.25, -Math.PI / 2);
+  add('rug', 2.15, 0.25, Math.PI / 2);
+  add('whiteboard', 7, -h + KINDS.whiteboard.inset!);
+  add('calendar', CALENDAR_SPOTS[0][0], -h + KINDS.calendar.inset!);
+  add('shelf', -0.35, -2.4);
+  // Windows: two at the back of the team room, one on its side and front; the meeting room's side; the office's side and front.
   add('window', -6.9, -h, 0);
-  add('window', -2.1, -h, 0);
+  add('window', -3.3, -h, 0);
   add('window', -PARCEL, 1.5, Math.PI / 2);
   add('window', -4.5, h, Math.PI);
-  add('window', 7.5, -h, 0);
-  add('window', PARCEL, 1.75, -Math.PI / 2);
-  add('plantLowA', 8.35, 3.85, 2.2);
-  add('plantLowB', 0.75, -3.85);
+  add('window', 10, -2, -Math.PI / 2);
+  add('window', 10, 2.5, -Math.PI / 2);
+  add('window', 7, h, Math.PI);
+  add('plantLowA', 9.35, -3.85, 2.2);
+  add('bush', 4.65, 3.85);
+  add('plantLowB', 0.65, -3.85);
   add('bush', -8.35, 3.85);
-  add('wickerVase', -0.75, 3.85);
+  add('wickerVase', 0.65, 3.85);
   return items;
 }
 
 // ---------------------------------------------------------------- store
 
-const STORAGE_KEY = 'oficina-3d:layout';
-/** v2: rooms. Older saves (single fixed room) start over from the new default office. */
-const VERSION = 2;
+/**
+ * v2: rooms. v3: reception and the director's office. v4: the sofa in reception. v5: its rug. v2 saves keep
+ * their finishes and the desks that still fit, on the new rooms; older ones start over from the default office.
+ */
+const VERSION = 6;
+const BACKUP_KEY = 'oficina-3d:layout:v2';
 
 interface Saved {
   version: number;
@@ -655,6 +782,7 @@ interface Saved {
   deskStyle: DeskStyle;
   chairs: Record<ChairPack, ChairStyle>;
   windows: WindowStyle;
+  outdoor: OutdoorStyle;
 }
 
 /** What undo restores. */
@@ -667,11 +795,19 @@ const defaultChairs = (): Record<ChairPack, ChairStyle> => ({
 
 function load(): Saved {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = readPref('layout');
     if (raw) {
       const s = JSON.parse(raw) as Saved;
-      if (s.version === VERSION && Array.isArray(s.items) && Array.isArray(s.rooms) && s.rooms.length) {
+      if (s.version >= 2 && s.version <= VERSION && Array.isArray(s.items) && Array.isArray(s.rooms) && s.rooms.length) {
         s.items = s.items.filter((i) => i.kind in KINDS);
+        // Saves where an old migration handed out an id already in use (a desk and the calendar
+        // both «i22»: dragging the desk moved the calendar's spot along the wall): the later one gets its own.
+        const seen = new Set<string>();
+        for (const i of s.items) {
+          if (seen.has(i.id)) i.id = newId(s);
+          seen.add(i.id);
+        }
+        s.nextId = Math.max(s.nextId ?? 0, ...s.items.map((i) => Number(i.id.slice(1)) + 1 || 0));
         s.rooms = s.rooms.map((r) => ({
           ...r,
           floor: FLOORS.some((f) => f.id === r.floor) ? r.floor : 'plain',
@@ -690,7 +826,29 @@ function load(): Saved {
           model: WINDOW_MODELS.some((m) => m.id === w?.model) ? w.model : DEFAULT_WINDOW_STYLE.model,
           frame: WINDOW_FRAMES.some((f) => f.id === w?.frame) ? w.frame : DEFAULT_WINDOW_STYLE.frame,
         };
+        const o = s.outdoor;
+        s.outdoor = {
+          ground: GROUNDS.some((g) => g.id === o?.ground) ? o.ground : DEFAULT_OUTDOOR.ground,
+          sky: SKIES.some((k) => k.id === o?.sky) ? o.sky : DEFAULT_OUTDOOR.sky,
+          bench: BENCHES.some((b) => b.id === o?.bench) ? o.bench : DEFAULT_OUTDOOR.bench,
+          lamp: LAMPS.some((l) => l.id === o?.lamp) ? o.lamp : DEFAULT_OUTDOOR.lamp,
+        };
         s.nextRoom ||= s.rooms.length + 1;
+        if (s.version === 2) return fromV2(s, raw);
+        if (s.version < 4) {
+          widenOffice(s);
+          addSofa(s);
+        }
+        if (s.version < 5) addRug(s);
+        if (s.version < 6) addCalendar(s);
+        s.version = VERSION;
+        // Offices saved before there was a way in get one on the first wall with room for it.
+        if (!s.items.some((i) => i.kind === 'entrance')) {
+          const door: Item = { id: newId(s), kind: 'entrance', x: 0, z: 0, rot: 0 };
+          const r = s.rooms[0];
+          const spot = findFreeSpot(door, s.items, (r.x0 + r.x1) / 2, r.z1, 0, s.rooms);
+          if (spot) s.items.push({ ...door, ...spot });
+        }
         return s;
       }
     }
@@ -698,6 +856,93 @@ function load(): Saved {
     /* storage unavailable or corrupt: default office */
   }
   return fresh();
+}
+
+/**
+ * Saves of the default office from before the head's office reached the meeting room's right
+ * side: widen it to line up, carrying its outside wall's windows along, when nothing is in the way.
+ */
+function widenOffice(s: Saved): void {
+  const office = s.rooms.find((r) => r.name === 'Despacho de dirección');
+  const meeting = s.rooms.find((r) => r.name === 'Sala de reuniones');
+  if (!office || !meeting || office.x1 >= meeting.x1 || Math.abs(office.z0 - meeting.z1) > 1e-6) return;
+  const oldX = office.x1;
+  const rooms = s.rooms.map((r) => (r === office ? { ...r, x1: meeting.x1 } : r));
+  if (roomsProblem(rooms)) return;
+  const items = s.items.map((i) => (i.kind === 'window' && Math.abs(i.x - oldX) < 1e-6 && i.z > office.z0 && i.z < office.z1 ? { ...i, x: meeting.x1 } : i));
+  if (items.some((i) => placementProblem(i, items, rooms))) return;
+  s.rooms = rooms;
+  s.items = items;
+}
+
+/** Offices from before the sofa: one goes into reception, between its two inner doors if there's room. */
+function addSofa(s: Saved): void {
+  if (s.items.some((i) => i.kind === 'sofa')) return;
+  const reception = s.rooms.find((r) => r.name === 'Recepción');
+  if (!reception) return;
+  const sofa: Item = { id: newId(s), kind: 'sofa', x: reception.x1 - 0.6, z: (reception.z0 + reception.z1) / 2 + 0.25, rot: -Math.PI / 2 };
+  if (!placementProblem(sofa, s.items, s.rooms)) s.items.push(sofa);
+  else {
+    const spot = findFreeSpot(sofa, s.items, sofa.x, sofa.z, 0, s.rooms);
+    if (spot && itemRoom({ ...sofa, ...spot }, s.rooms)?.id === reception.id) s.items.push({ ...sofa, ...spot });
+  }
+}
+
+/** Where the wall planner goes: the meeting room's back wall beside the whiteboard, else the team room's. */
+const CALENDAR_SPOTS: [number, number][] = [
+  [4.95, 0],
+  [9.25, 0],
+  [-1.2, 0],
+];
+
+/** Offices from before the calendar: one goes on the first free spot of the back wall. */
+function addCalendar(s: Saved): void {
+  if (s.items.some((i) => i.kind === 'calendar')) return;
+  for (const [x, rot] of CALENDAR_SPOTS) {
+    const item: Item = { id: '', kind: 'calendar', x, z: -PARCEL / 2 + KINDS.calendar.inset!, rot };
+    if (!placementProblem(item, s.items, s.rooms)) {
+      s.items.push({ ...item, id: newId(s) });
+      return;
+    }
+  }
+}
+
+/**
+ * A fresh item id. `nextId` is the next free number (as addItem uses it), never below what's
+ * already taken, so an id is never handed out twice.
+ */
+function newId(s: Saved): string {
+  s.nextId = Math.max(s.nextId ?? 0, ...s.items.map((i) => Number(i.id.slice(1)) + 1 || 0));
+  return `i${s.nextId++}`;
+}
+
+/** Offices from before the rug: one lies in front of the reception sofa. */
+function addRug(s: Saved): void {
+  const sofa = s.items.find((i) => i.kind === 'sofa');
+  if (!sofa || s.items.some((i) => i.kind === 'rug')) return;
+  // 1.25 m in front of the sofa's centre, along the way it faces.
+  const rug: Item = { id: newId(s), kind: 'rug', x: sofa.x + Math.sin(sofa.rot) * 1.25, z: sofa.z + Math.cos(sofa.rot) * 1.25, rot: sofa.rot + Math.PI };
+  if (!placementProblem(rug, s.items, s.rooms)) s.items.push(rug);
+}
+
+/** The new default rooms, with the old office's finishes and every agent desk that still fits near where it was. */
+function fromV2(old: Saved, raw: string): Saved {
+  try {
+    localStorage.setItem(BACKUP_KEY, raw);
+  } catch {
+    /* no room for the copy: carry on */
+  }
+  const next = fresh();
+  next.deskStyle = old.deskStyle;
+  next.chairs = old.chairs;
+  next.windows = old.windows;
+  for (const d of old.items) {
+    if (d.kind !== 'desk' || d.slot === undefined || d.slot < 0) continue;
+    const item: Item = { ...d, id: `i${next.nextId++}` };
+    const spot = findFreeSpot(item, next.items, d.x, d.z, 0, next.rooms);
+    if (spot && Math.hypot(spot.x - d.x, spot.z - d.z) < 1.5) next.items.push({ ...item, ...spot });
+  }
+  return next;
 }
 
 function fresh(): Saved {
@@ -712,6 +957,7 @@ function fresh(): Saved {
     deskStyle: { ...DEFAULT_DESK_STYLE },
     chairs: defaultChairs(),
     windows: { ...DEFAULT_WINDOW_STYLE },
+    outdoor: { ...DEFAULT_OUTDOOR },
   };
 }
 
@@ -722,11 +968,8 @@ const listeners = new Set<() => void>();
 
 function changed(): void {
   revision++;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
-  } catch {
-    /* private mode / quota: layout lives in memory */
-  }
+  // Here and on the local server (see prefs.ts), so it's all there tomorrow.
+  savePref('layout', JSON.stringify(saved));
   for (const fn of listeners) fn();
 }
 
@@ -735,11 +978,13 @@ export const layoutRooms = (): readonly Room[] => saved.rooms;
 export const layoutGeometry = () => roomGeometry(saved.rooms);
 export const deskStyle = (): Readonly<DeskStyle> => saved.deskStyle;
 export const windowStyle = (): Readonly<WindowStyle> => saved.windows;
+export const outdoorStyle = (): Readonly<OutdoorStyle> => saved.outdoor;
 export const chairStyle = (pack: ChairPack): Readonly<ChairStyle> => saved.chairs[pack];
 export const layoutRevision = () => revision;
 export const layoutItem = (id: string | null) => (id ? saved.items.find((i) => i.id === id) : undefined);
 export const layoutRoom = (id: string | null) => (id ? saved.rooms.find((r) => r.id === id) : undefined);
 export const deskBySlot = (slot: number) => saved.items.find((i) => i.kind === 'desk' && i.slot === slot);
+export const entranceItem = () => saved.items.find((i) => i.kind === 'entrance');
 
 /** The room an item belongs to: where it stands, or the room its wall faces. */
 export function itemRoom(item: Item, rooms: readonly Room[] = saved.rooms): Room | undefined {
@@ -752,24 +997,41 @@ export function onLayoutChange(fn: () => void): () => void {
   return () => listeners.delete(fn);
 }
 
-export function addItem(kind: ItemKind, near: P): Item | null {
+/** Adds an object near a point. Desks belong to an agent: pass their seat number. */
+export function addItem(kind: ItemKind, near: P, slot?: number): Item | null {
+  const item = kind === 'desk' ? addDesk(slot, near) : addLoose(kind, near);
+  if (item) changed();
+  return item;
+}
+
+function addLoose(kind: ItemKind, near: P): Item | null {
   const item: Item = { id: `i${saved.nextId++}`, kind, x: near.x, z: near.z, rot: 0 };
-  if (kind === 'desk') {
-    item.slot = Math.max(-1, ...saved.items.filter((i) => i.kind === 'desk').map((i) => i.slot ?? -1)) + 1;
-    item.decor = 'plant';
-  }
   // New things land in open floor (with room to walk around them), not squeezed into a gap.
   const spot = findFreeSpot(item, saved.items, near.x, near.z, 0.6) ?? findFreeSpot(item, saved.items, near.x, near.z);
   if (!spot) return null;
   Object.assign(item, spot);
   saved.items.push(item);
-  changed();
+  return item;
+}
+
+/** A desk goes to the next default spot (DESK_SPOTS); once those are full, near `near`. */
+function addDesk(slot: number | undefined, near: P): Item | null {
+  const item: Item = { id: `i${saved.nextId++}`, kind: 'desk', x: near.x, z: near.z, rot: 0 };
+  item.slot = slot ?? Math.max(-1, ...saved.items.filter((i) => i.kind === 'desk').map((i) => i.slot ?? -1)) + 1;
+  item.decor = item.slot % 2 ? 'plant' : 'books';
+  const spot =
+    defaultDeskSpot(item, saved.items, saved.rooms) ??
+    findFreeSpot(item, saved.items, near.x, near.z, 0.6) ??
+    findFreeSpot(item, saved.items, near.x, near.z);
+  if (!spot) return null;
+  Object.assign(item, spot);
+  saved.items.push(item);
   return item;
 }
 
 export function duplicateItem(id: string): Item | null {
   const src = layoutItem(id);
-  if (!src || KINDS[src.kind].unique) return null;
+  if (!src || KINDS[src.kind].unique || KINDS[src.kind].perWorker) return null;
   const copy = addItem(src.kind, { x: src.x + 0.5, z: src.z + 0.5 });
   if (!copy) return null;
   if (!KINDS[src.kind].wall) copy.rot = src.rot;
@@ -790,7 +1052,7 @@ export function updateItem(id: string, patch: Partial<Pick<Item, 'x' | 'z' | 'ro
 
 export function removeItem(id: string): void {
   const i = saved.items.findIndex((it) => it.id === id);
-  if (i < 0 || KINDS[saved.items[i].kind].unique) return;
+  if (i < 0 || KINDS[saved.items[i].kind].unique || KINDS[saved.items[i].kind].perWorker) return;
   saved.items.splice(i, 1);
   changed();
 }
@@ -804,6 +1066,12 @@ export function setDeskStyle(patch: Partial<DeskStyle>): void {
 /** Every window changes together. */
 export function setWindowStyle(patch: Partial<WindowStyle>): void {
   saved.windows = { ...saved.windows, ...patch };
+  changed();
+}
+
+/** The ground round the building and the sky over it. */
+export function setOutdoor(patch: Partial<OutdoorStyle>): void {
+  saved.outdoor = { ...saved.outdoor, ...patch };
   changed();
 }
 
@@ -902,24 +1170,23 @@ export const snapshotLayout = (): LayoutSnapshot =>
     deskStyle: saved.deskStyle,
     chairs: saved.chairs,
     windows: saved.windows,
+    outdoor: saved.outdoor,
   });
 
-export function resetLayout(): void {
+/** Back to the default office; the agents' desks (by seat number) go where the house rule says. */
+export function resetLayout(slots: number[] = []): void {
   saved = fresh();
+  for (const slot of slots) if (slot >= 0) addDesk(slot, { x: -4.5, z: 0 });
   changed();
 }
 
-/** Every worker needs a desk: recreate any that went missing (e.g. after a simulation reset). */
-export function ensureDesks(slots: number[]): void {
-  let added = false;
-  const first = saved.rooms[0];
-  for (const slot of slots) {
-    if (deskBySlot(slot)) continue;
-    const item: Item = { id: `i${saved.nextId++}`, kind: 'desk', x: 0, z: 0, rot: 0, slot, decor: 'plant' };
-    const spot = findFreeSpot(item, saved.items, (first.x0 + first.x1) / 2, (first.z0 + first.z1) / 2);
-    if (spot) Object.assign(item, spot);
-    saved.items.push(item);
-    added = true;
-  }
-  if (added) changed();
+/** A desk whose agent has left goes with them. */
+export function pruneDesks(slots: number[]): void {
+  const wanted = new Set(slots);
+  const before = saved.items.length;
+  saved.items = saved.items.filter((i) => i.kind !== 'desk' || wanted.has(i.slot ?? -1));
+  if (saved.items.length !== before) changed();
 }
+
+/** Seats with an agent but no desk yet: waiting for you to place it in the editor. */
+export const unplacedDesks = (slots: number[]) => slots.filter((slot) => !deskBySlot(slot));

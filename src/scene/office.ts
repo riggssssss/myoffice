@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import {
   DOOR_H,
   DOOR_W,
+  ENTRANCE,
   KINDS,
   onLine,
   roomGeometry,
@@ -11,6 +12,9 @@ import {
   wallOf,
   windowModel,
   type FloorKind,
+  type BenchModel,
+  type GroundKind,
+  type LampModel,
   type Item,
   type OuterWall,
   type P,
@@ -22,9 +26,16 @@ import {
 import { floorTexture, WALL_PAINT, wallTexture } from './floors';
 import { buildItem, type Assets, type MatFn, type RoomLook } from './furniture';
 import { Materials, type ScenePalette } from './palette';
+import { groundMesh } from './ground';
+import { buildLandscape, type Landscape } from './landscape';
 import { groundShadow, type ShadowBlock } from './textures';
 
 const HALF = WALL_T / 2;
+/** Warm lighting (about 3000 K, like home bulbs) and its full strength. */
+const CEILING_LIGHT = '#ffd8a6';
+const CEILING_INTENSITY = 8;
+const NIGHT_FLOOR = new THREE.Color('#6f675d');
+const DAY_FLOOR = new THREE.Color('#ffffff');
 /** A wall turned away from the camera drops all the way: only the slab's edge stays. */
 const CUT_OUT = 0;
 /** A partition between rooms that would hide one of them drops to half height. */
@@ -34,6 +45,8 @@ const CUT_LOW = 1.0 / WALL_H;
 function dispose(root: THREE.Object3D): void {
   root.traverse((o) => {
     if (!(o instanceof THREE.Mesh)) return;
+    // Its per-copy buffers (positions, colours) go even when the shape is shared.
+    if (o instanceof THREE.InstancedMesh) o.dispose();
     if (!o.userData.shared) o.geometry.dispose();
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (!m.userData.shared) m.dispose();
   });
@@ -42,6 +55,8 @@ function dispose(root: THREE.Object3D): void {
 interface Placed {
   /** Rebuild when this changes: kind, desk decor or style, or a model finished loading. */
   sig: string;
+  /** Entrance: the hinge to swing. */
+  door?: THREE.Object3D;
   root: THREE.Group;
   screen?: THREE.MeshStandardMaterial;
   lamp?: THREE.PointLight;
@@ -160,11 +175,25 @@ export class Office {
   private light = new THREE.Group();
   private placed = new Map<string, Placed>();
   private screens = new Map<number, THREE.MeshStandardMaterial>();
-  private assets: Assets = { computer: null, desks: null, chairs: null, plants: null, decor: null, windows: null };
+  private assets: Assets = { computer: null, desks: null, chairs: null, plants: null, decor: null, windows: null, sofas: null };
   private assetsRev = 0;
   private lampIntensity = 0;
   private shadow: THREE.Mesh | null = null;
+  /** The garden round the building (lawn, path, street, trees), when the ground is «Césped». */
+  private garden: { group: THREE.Group; land: Landscape | null } | null = null;
+  private groundKind: GroundKind = 'grass';
+  private furniture: { bench: BenchModel; lamp: LampModel } = { bench: 'maro', lamp: 'modern' };
+  private doors: Item[] = [];
+  private streetLights = 0;
+  /** How much direct sun the clouds let through right now (dims the light through the windows). */
+  private veil = 1;
   private shellSig = '';
+  /** Ceiling lights, a few per room: off by day, warming up as the sun goes down. */
+  private ceiling: THREE.PointLight[] = [];
+  private interior = 0;
+  /** Entrance door: how far open (0–1) and where it's heading. */
+  private doorOpen = 0;
+  private doorGoal = 0;
   private runs: WallRun[] = [];
   private rooms: readonly Room[] = [];
   /** Wall objects ride with the wall they hang on. */
@@ -174,6 +203,8 @@ export class Office {
   /** Light shafts, by window: shown only while the window's wall stands. */
   private shafts = new Map<string, THREE.Mesh>();
   private sunDir = new THREE.Vector3(-0.4, -0.78, -0.5).normalize();
+  /** What the window light was last built from, to rebuild it alone when the sun moves. */
+  private lightFor: { rooms: readonly Room[]; windows: Item[]; style: WindowStyle } | null = null;
   private night = false;
   private palette: ScenePalette;
   private m: MatFn;
@@ -200,16 +231,33 @@ export class Office {
 
   /** Direction the sunlight travels (from the scene's sun): sets the angle of light through each window. */
   setSun(dir: THREE.Vector3): void {
-    this.sunDir.copy(dir).normalize();
+    const next = dir.clone().normalize();
+    // The sun crawls: only redraw the patches once it has moved a visible amount (~1°).
+    if (next.angleTo(this.sunDir) < 0.017) return;
+    this.sunDir.copy(next);
+    this.rebuildWindowLight();
   }
+
+  private rebuildWindowLight(): void {
+    if (!this.lightFor) return;
+    for (const c of [...this.light.children]) {
+      this.light.remove(c);
+      dispose(c);
+    }
+    this.shafts.clear();
+    this.buildWindowLight(this.lightFor.rooms, this.lightFor.windows, this.lightFor.style);
+    this.setVeil(this.veil);
+  }
+
 
   /** Bring the rooms and 3D objects in line with the layout. */
   sync(rooms: readonly Room[], items: readonly Item[], look: RoomLook): void {
     const windows = items.filter((i) => i.kind === 'window');
-    const shellSig = JSON.stringify([rooms, windows.map((w) => [w.x, w.z, w.rot]), look.windows.model]);
+    const doors = items.filter((i) => i.kind === 'entrance');
+    const shellSig = JSON.stringify([rooms, [...windows, ...doors].map((w) => [w.kind, w.x, w.z, w.rot]), look.windows.model]);
     if (shellSig !== this.shellSig) {
       this.shellSig = shellSig;
-      this.buildShell(rooms, windows, look.windows);
+      this.buildShell(rooms, windows, look.windows, doors);
     }
 
     const seen = new Set<string>();
@@ -230,7 +278,7 @@ export class Office {
         const built = buildItem(item, this.m, this.assets, look);
         built.obj.userData.itemId = item.id;
         if (built.lamp) built.lamp.intensity = this.lampIntensity;
-        p = { sig, root: built.obj, screen: built.screen, lamp: built.lamp };
+        p = { sig, root: built.obj, screen: built.screen, lamp: built.lamp, door: built.door };
         this.placed.set(item.id, p);
         this.items.add(p.root);
       }
@@ -263,7 +311,7 @@ export class Office {
     this.shafts.clear();
   }
 
-  private buildShell(rooms: readonly Room[], windows: Item[], style: WindowStyle): void {
+  private buildShell(rooms: readonly Room[], windows: Item[], style: WindowStyle, doors: Item[]): void {
     this.clearShell();
     this.rooms = rooms;
     const shellMat = this.m('wall');
@@ -287,17 +335,45 @@ export class Office {
       this.shell.add(mesh);
     }
 
+    // Ceiling lights: roughly one per 4.5 m square of each room, just under the wall tops.
+    this.ceiling = [];
+    for (const r of rooms) {
+      const w = r.x1 - r.x0;
+      const d = r.z1 - r.z0;
+      const nx = Math.max(1, Math.round(w / 4.5));
+      const nz = Math.max(1, Math.round(d / 4.5));
+      for (let i = 0; i < nx; i++) {
+        for (let j = 0; j < nz; j++) {
+          const x = r.x0 + (w * (i + 0.5)) / nx;
+          const z = r.z0 + (d * (j + 0.5)) / nz;
+          const light = new THREE.PointLight(CEILING_LIGHT, 0, Math.max(w / nx, d / nz) * 1.6 + 3, 1.7);
+          light.position.set(x, WALL_H - 0.5, z);
+          this.ceiling.push(light);
+          this.shell.add(light);
+        }
+      }
+    }
+    this.setInterior(this.interior);
+
     const ends = wallEnds([...geo.outer, ...geo.joints]);
 
     // Outside walls, with a hole for each window on them.
     const win = windowModel(style.model);
     for (const w of geo.outer) {
-      const openings: Opening[] = windows
-        .filter((it) => wallOf(it, rooms) === w)
-        .map((it) => {
-          const along = w.axis === 'x' ? it.x : it.z;
-          return { a: along - win.width / 2, b: along + win.width / 2, y0: win.sill, y1: win.head };
-        });
+      const openings: Opening[] = [
+        ...windows
+          .filter((it) => wallOf(it, rooms) === w)
+          .map((it) => {
+            const along = w.axis === 'x' ? it.x : it.z;
+            return { a: along - win.width / 2, b: along + win.width / 2, y0: win.sill, y1: win.head };
+          }),
+        ...doors
+          .filter((it) => wallOf(it, rooms) === w)
+          .map((it) => {
+            const along = w.axis === 'x' ? it.x : it.z;
+            return { a: along - ENTRANCE.width / 2, b: along + ENTRANCE.width / 2, y0: 0, y1: ENTRANCE.head };
+          }),
+      ];
       const faces: (THREE.Material | null)[] = Array(6).fill(null);
       faces[faceIndex(w, w.inward)] = this.wallMaterial(byId.get(w.room)!.walls);
       // Close corners by running half a wall past an end, unless the wall carries on in line
@@ -328,6 +404,8 @@ export class Office {
       this.addRun(wallPieces(j, from, to, openings, faces, shellMat), plus, true, '');
     }
 
+    this.doors = doors;
+    this.buildGarden();
     this.buildGroundShadow(rooms, geo.outer);
     this.buildWindowLight(rooms, windows, style);
   }
@@ -399,12 +477,13 @@ export class Office {
     this.shadow = new THREE.Mesh(
       new THREE.PlaneGeometry(box.x1 - box.x0, box.z1 - box.z0),
       new THREE.MeshBasicMaterial({
-        // Lit from the left of the default view: the shadow falls to the right on screen.
-        map: groundShadow(blocks, box, { x: 0.27, z: -0.27 }),
+        // Only the soft darkening where the building meets the ground: the sun's own shadow on
+        // the ground is real now (shadow map), so this one doesn't lean with the light.
+        map: groundShadow(blocks, box, { x: 0, z: 0 }),
         color: '#000000',
         transparent: true,
         depthWrite: false,
-        opacity: this.night ? 0.8 : 0.55,
+        opacity: this.night ? 0.45 : 0.32,
       }),
     );
     this.shadow.rotation.x = -Math.PI / 2;
@@ -419,13 +498,17 @@ export class Office {
    * faint shaft of light from the glass down to it.
    */
   private buildWindowLight(rooms: readonly Room[], windows: Item[], style: WindowStyle): void {
+    this.lightFor = { rooms, windows, style };
     const win = windowModel(style.model);
     const sun = this.sunDir;
     for (const it of windows) {
       const wall = wallOf(it, rooms);
       if (!wall) continue;
       const n = wall.inward;
-      const sunny = sun.x * n.x + sun.z * n.z > 0.15;
+      // A sun lower than ~15° would throw its patch far past the room: skylight instead.
+      // At night the windows let in the blue of the sky, faintly, instead of sunlight.
+      const moon = this.night;
+      const sunny = !moon && sun.x * n.x + sun.z * n.z > 0.15 && sun.y < -0.26;
       // Skylight: straight in through the glass, falling at 40°.
       const dir = sunny ? sun.clone() : new THREE.Vector3(n.x * 0.77, -0.64, n.z * 0.77);
       const along = wall.axis === 'x' ? it.x : it.z;
@@ -450,9 +533,9 @@ export class Office {
         patch,
         new THREE.MeshBasicMaterial({
           map: patchTexture(),
-          color: sunny ? '#ffe2b0' : '#dfe9f5',
+          color: moon ? '#7f9bea' : sunny ? '#ffe2b0' : '#dfe9f5',
           transparent: true,
-          opacity: sunny ? 0.2 : 0.09,
+          opacity: moon ? 0.16 : sunny ? 0.2 : 0.09,
           blending: THREE.AdditiveBlending,
           depthWrite: false,
           side: THREE.DoubleSide,
@@ -465,8 +548,8 @@ export class Office {
       // Shaft: four quads from the glass to the patch, fading out toward the floor.
       const pts: number[] = [];
       const cols: number[] = [];
-      const c = sunny ? [1, 0.88, 0.66] : [0.82, 0.88, 0.95];
-      const a0 = sunny ? 0.035 : 0.02;
+      const c = moon ? [0.5, 0.62, 0.95] : sunny ? [1, 0.88, 0.66] : [0.82, 0.88, 0.95];
+      const a0 = moon ? 0.03 : sunny ? 0.035 : 0.02;
       const quad = (p: THREE.Vector3[], alpha: number[]) => {
         for (const k of [0, 1, 2, 0, 2, 3]) {
           pts.push(...p[k].toArray());
@@ -489,7 +572,6 @@ export class Office {
       this.shafts.set(it.id, shaftMesh);
       this.light.add(shaftMesh);
     }
-    this.light.visible = !this.night;
   }
 
   private floorMaterial(r: Room): THREE.MeshStandardMaterial {
@@ -523,21 +605,49 @@ export class Office {
   private tintWall(kind: WallKind, mat: THREE.MeshStandardMaterial): void {
     const paint = WALL_PAINT[kind];
     mat.color.set(paint ?? '#ffffff');
-    // Dim at night like the palette does for the bare walls.
-    if (this.night) mat.color.multiplyScalar(paint ? 0.32 : 0.42);
+    // Dim at night like the palette does for the bare walls; with the ceiling lights on they keep their colour.
+    if (this.night) mat.color.multiplyScalar(THREE.MathUtils.lerp(paint ? 0.32 : 0.42, 1, this.interior * 0.92));
   }
 
   /** Textures carry their own colour; at night they are dimmed like everything else. */
   private tintFloor(f: { mat: THREE.MeshStandardMaterial; kind: FloorKind }): void {
     if (f.kind === 'plain') f.mat.color.set(this.palette.floor);
-    else f.mat.color.set(this.night ? '#6f675d' : '#ffffff');
+    else f.mat.color.set(this.night ? NIGHT_FLOOR.clone().lerp(DAY_FLOOR, this.interior * 0.92) : '#ffffff');
   }
 
   /**
    * Per frame: walls between the camera and the inside drop away entirely, partitions that
    * would hide a room drop to half height, and the rest stand. Wall objects follow their wall.
    */
+  /** How much the ceiling lights are on (0 by day, 1 at night). */
+  setInterior(level: number): void {
+    const was = this.interior;
+    this.interior = level;
+    // Kept in the scene even at zero: switching lights in and out would recompile every material.
+    for (const l of this.ceiling) l.intensity = level * CEILING_INTENSITY;
+    // Lit rooms don't sink into the night as much: floors and walls keep more of their colour.
+    if (Math.abs(was - level) > 0.02) {
+      for (const f of this.floorMats.values()) this.tintFloor(f);
+      for (const [kind, mat] of this.wallMats) this.tintWall(kind, mat);
+    }
+  }
+
+  /** Reading lamps on the desks (0 = off). */
+  setDeskLamps(intensity: number): void {
+    this.lampIntensity = intensity;
+    for (const placed of this.placed.values()) if (placed.lamp) placed.lamp.intensity = intensity;
+  }
+
+  /** Someone is at the entrance: swing the door open (it closes again on its own). */
+  setDoorOpen(open: boolean): void {
+    this.doorGoal = open ? 1 : 0;
+  }
+
   update(camera: THREE.Camera, target: THREE.Vector3, dt: number, instant = false): void {
+    // Opens briskly, closes a little slower, easing out like a real door.
+    this.doorOpen += (this.doorGoal - this.doorOpen) * (instant ? 1 : 1 - Math.exp(-(this.doorGoal > this.doorOpen ? 6 : 3.5) * dt));
+    for (const p of this.placed.values()) if (p.door) p.door.rotation.y = -1.4 * this.doorOpen;
+
     const tx = camera.position.x - target.x;
     const tz = camera.position.z - target.z;
     const len = Math.hypot(tx, tz) || 1;
@@ -581,13 +691,68 @@ export class Office {
     return this.placed.get(itemId)?.root;
   }
 
+  /** The lawn and everything on it, or nothing («Por defecto»: the model alone on the table). */
+  private buildGarden(): void {
+    if (this.garden) {
+      this.shell.remove(this.garden.group);
+      dispose(this.garden.group);
+      this.garden = null;
+    }
+    if (!this.rooms.length) return;
+    const { bounds } = roomGeometry(this.rooms);
+    const group = new THREE.Group();
+    if (this.groundKind !== 'grass') {
+      // «Por defecto»: just the table, but it still gets wet, shaded and puddled.
+      group.add(groundMesh(bounds, 'plain'));
+      this.garden = { group, land: null };
+      this.shell.add(group);
+      return;
+    }
+    group.add(groundMesh(bounds));
+    const land = buildLandscape(this.rooms, bounds, this.doors[0], this.furniture);
+    land.setNight(this.streetLights);
+    group.add(land.group);
+    this.garden = { group, land };
+    this.shell.add(group);
+  }
+
+  /** What the ground outside is, and the bench and lamps on it: swapped in place, nothing else rebuilt. */
+  setOutdoor(o: { ground: GroundKind; bench: BenchModel; lamp: LampModel }): void {
+    if (o.ground === this.groundKind && o.bench === this.furniture.bench && o.lamp === this.furniture.lamp) return;
+    this.groundKind = o.ground;
+    this.furniture = { bench: o.bench, lamp: o.lamp };
+    if (this.rooms.length) this.buildGarden();
+  }
+
+  /** The street lamps outside: 0 off, 1 fully on (dusk, night, a dark storm). */
+  setStreetLights(k: number): void {
+    if (Math.abs(k - this.streetLights) < 0.01) return;
+    this.streetLights = k;
+    this.garden?.land?.setNight(k);
+  }
+
+  /**
+   * A cloud over the office: the sunlight through the windows fades with it (`k`: how much of
+   * the direct sun gets through).
+   */
+  setVeil(k: number): void {
+    this.veil = k;
+    this.light.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const m = o.material as THREE.MeshBasicMaterial;
+      m.userData.base ??= m.opacity;
+      m.opacity = m.userData.base * (this.night ? 1 : 0.25 + 0.75 * k);
+    });
+  }
+
   setNight(night: boolean, p: ScenePalette): void {
+    const changed = night !== this.night;
     this.night = night;
+    if (changed) this.rebuildWindowLight();
     this.palette = p;
     for (const f of this.floorMats.values()) this.tintFloor(f);
     for (const [kind, mat] of this.wallMats) this.tintWall(kind, mat);
-    if (this.shadow) (this.shadow.material as THREE.MeshBasicMaterial).opacity = night ? 0.8 : 0.55;
-    this.light.visible = !night;
+    if (this.shadow) (this.shadow.material as THREE.MeshBasicMaterial).opacity = night ? 0.45 : 0.32;
     this.lampIntensity = p.lampIntensity;
     for (const placed of this.placed.values()) if (placed.lamp) placed.lamp.intensity = p.lampIntensity;
   }

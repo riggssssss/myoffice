@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { woodFinish } from './wood';
 
 export interface ScenePalette {
   background: string;
@@ -38,8 +39,9 @@ export const LIGHT: ScenePalette = {
   floorEdge: '#cbbda6',
   wall: '#f6f1e7',
   wallTrim: '#dcd1bf',
-  wood: '#d3bf9f',
-  woodDark: '#a98d68',
+  // Real walnut photos carry the colour (see wood.ts); these only tint them for day and night.
+  wood: '#ffffff',
+  woodDark: '#ffffff',
   chair: '#3c3833',
   metal: '#8a847a',
   monitor: '#2b2926',
@@ -65,13 +67,13 @@ export const LIGHT: ScenePalette = {
 };
 
 export const DARK: ScenePalette = {
-  background: '#171511',
+  background: '#1a2f57',
   floor: '#2c2822',
   floorEdge: '#1f1c18',
   wall: '#35302a',
   wallTrim: '#29251f',
-  wood: '#5b4b38',
-  woodDark: '#43372a',
+  wood: '#6f6a64',
+  woodDark: '#6f6a64',
   chair: '#1d1b18',
   metal: '#5d5850',
   monitor: '#151412',
@@ -88,16 +90,30 @@ export const DARK: ScenePalette = {
   leafCard: '#6f7a68',
   board: '#c9c3b6',
   window: '#26303a',
-  hemiSky: '#8f9bb3',
-  hemiGround: '#2a241c',
-  hemiIntensity: 0.55,
+  hemiSky: '#6d86d4',
+  hemiGround: '#2c3a5c',
+  hemiIntensity: 0.95,
   sunIntensity: 0.35,
   lampIntensity: 5,
   screenGlow: 1.6,
 };
 
+const ca = new THREE.Color();
+const cb = new THREE.Color();
+
+/** Somewhere between night (0) and full day (1): colours and intensities blend. */
+export function mixPalette(t: number): ScenePalette {
+  const out = {} as Record<keyof ScenePalette, string | number>;
+  for (const key of Object.keys(LIGHT) as (keyof ScenePalette)[]) {
+    const a = DARK[key];
+    const b = LIGHT[key];
+    out[key] = typeof a === 'number' ? a + ((b as number) - a) * t : `#${ca.set(a).lerp(cb.set(b as string), t).getHexString()}`;
+  }
+  return out as unknown as ScenePalette;
+}
+
 const textures = new Map<string, THREE.Texture>();
-function texture(file: string, srgb = true): THREE.Texture {
+export function texture(file: string, srgb = true): THREE.Texture {
   let t = textures.get(file);
   if (!t) {
     t = new THREE.TextureLoader().load(`${import.meta.env.BASE_URL}models/${file}`);
@@ -114,6 +130,8 @@ const SLOT_EXTRAS: Partial<Record<keyof ScenePalette, () => THREE.MeshStandardMa
   plant: () => ({ flatShading: true, side: THREE.DoubleSide }),
   stem: () => ({ side: THREE.DoubleSide }),
   wicker: () => ({ map: texture('rattan.jpg') }),
+  wood: () => woodFinish('honey'),
+  woodDark: () => woodFinish('natural'),
   leafCard: () => ({ map: texture('leaf.png'), alphaTest: 0.5, side: THREE.DoubleSide }),
   marble: () => ({ roughness: 0.5 }),
   deskPot: () => ({ roughness: 0.55 }),

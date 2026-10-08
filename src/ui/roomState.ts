@@ -21,6 +21,8 @@ import {
   setDeskStyle,
   setChairStyle,
   setWindowStyle,
+  setOutdoor,
+  type OutdoorStyle,
   type ChairPack,
   type ChairStyle,
   type FloorKind,
@@ -151,6 +153,21 @@ export function addKind(kind: ItemKind, near: P): void {
   emit();
 }
 
+/** Puts a new agent's desk in its default spot (or near where you're looking), ready to drag elsewhere. */
+export function placeDesk(slot: number, near: P): void {
+  remember();
+  const item = addItem('desk', near, slot);
+  if (!item) {
+    undo.pop();
+    fail('No queda sitio libre en la oficina para otra mesa');
+    return;
+  }
+  selectedId = item.id;
+  selectedRoom = null;
+  message = null;
+  emit();
+}
+
 export function duplicate(id: string): void {
   remember();
   const copy = duplicateItem(id);
@@ -171,8 +188,10 @@ export const deskOwner = (item: Item | undefined) =>
 /** Why an object can't be removed, or null. */
 export function removeBlocker(item: Item): string | null {
   if (KINDS[item.kind].unique) return 'La oficina necesita una: puedes moverla, pero no quitarla';
-  const owner = deskOwner(item);
-  if (owner) return `Es el puesto de ${owner.name}: asígnale otro antes de quitarlo`;
+  if (KINDS[item.kind].perWorker) {
+    const owner = deskOwner(item);
+    return `Es el puesto de ${owner?.name ?? 'un agente'}: se va cuando quitas a esa persona del organigrama`;
+  }
   return null;
 }
 
@@ -206,6 +225,12 @@ export function styleDesks(patch: Partial<DeskStyle>): void {
 export function styleWindows(patch: Partial<WindowStyle>): void {
   remember();
   setWindowStyle(patch);
+  emit();
+}
+
+export function styleOutdoor(patch: Partial<OutdoorStyle>): void {
+  remember();
+  setOutdoor(patch);
   emit();
 }
 
@@ -359,9 +384,9 @@ export function undoLast(): void {
   emit();
 }
 
-export function resetRoom(): void {
+export function resetRoom(slots: number[]): void {
   remember();
-  resetLayout();
+  resetLayout(slots);
   selectedId = null;
   selectedRoom = null;
   message = null;

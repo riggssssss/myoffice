@@ -1,4 +1,5 @@
-import { CHAIR_MODELS, chairStyle, corners, deskBySlot, DOOR_W, KINDS, layoutGeometry, layoutItems, layoutRevision, layoutRooms, onLine, toWorld, WALL_T, type ChairPack, type Item, type P } from '../sim/layout';
+import { CHAIR_MODELS, chairStyle, corners, deskBySlot, DOOR_W, ENTRANCE, entranceItem, KINDS, layoutGeometry, layoutItems, layoutRevision, layoutRooms, onLine, toWorld, WALL_T, wallOf, type ChairPack, type Item, type P } from '../sim/layout';
+import { DIRECTOR_SLOT } from '../sim/seed';
 import type { Activity, Worker } from '../sim/types';
 
 export const MEETING_SEATS = 6;
@@ -78,16 +79,145 @@ export function coffeeSpot(i: number): Spot {
   return itemSpot(w, `coffee-${i}`, lx, 0.85, Math.PI, 'stand');
 }
 
+// ---------------------------------------------------------------- outside
+
+/** How far the walkable ground reaches beyond the building (people walk off into the distance). */
+/** How far past the building people can walk (they come from and go off this far). */
+const OUTSIDE = 15;
+
+/** Just inside and just outside the way in, both facing into the office. */
+export function entranceSpots(): { inside: Spot; outside: Spot } | null {
+  const door = entranceItem();
+  if (!door) return null;
+  return {
+    inside: itemSpot(door, 'door-in', 0, 0.75, 0, 'stand'),
+    outside: itemSpot(door, 'door-out', 0, -1.1, 0, 'stand'),
+  };
+}
+
+/** Where people sit on a sofa, in its own frame (seat faces +z), and how high the cushion is. */
+const SOFA_SEATS = [-0.45, 0.45];
+const SOFA_SEAT_Z = 0.22;
+const SOFA_SEAT_TOP = 0.44;
+
+/**
+ * Reception: where a newcomer waits (the `i`th one). On the sofa while there's a free place,
+ * then side by side just inside the door.
+ */
+export function receptionSpot(i: number): Spot | null {
+  const door = entranceItem();
+  if (!door) return null;
+  const sofa = unique('sofa');
+  if (sofa && i < SOFA_SEATS.length) {
+    return { ...itemSpot(sofa, `sofa-${i}`, SOFA_SEATS[i], SOFA_SEAT_Z, 0, 'seat'), lift: SOFA_SEAT_TOP - CLASSIC_SEAT };
+  }
+  const k = sofa ? i - SOFA_SEATS.length : i;
+  return itemSpot(door, `wait-${k}`, ((k % 3) - 1) * 0.8, 1.7 + Math.floor(k / 3) * 0.7, 0, 'stand');
+}
+
+/** Where the interviewer meets a newcomer in reception: face to face, just inside the door. */
+export function greetSpots(): { guest: Spot; host: Spot } | null {
+  const door = entranceItem();
+  if (!door) return null;
+  return {
+    guest: itemSpot(door, 'greet-guest', 0.45, 1.5, -Math.PI / 2, 'stand'),
+    host: itemSpot(door, 'greet-host', -0.45, 1.5, Math.PI / 2, 'stand'),
+  };
+}
+
+/**
+ * Each person's own way home: out of the door and off in their own direction, fanned out
+ * across the ground in front of the entrance (`k` of `n`).
+ */
+export function exitSpot(k: number, n: number): Spot | null {
+  const door = entranceItem();
+  if (!door) return null;
+  const spread = Math.min(160, 28 * Math.max(1, n - 1)) * (Math.PI / 180);
+  // Alternate sides: the 1st goes right, the 2nd left, the 3rd further right…
+  const side = k % 2 ? -1 : 1;
+  const step = Math.ceil(k / 2);
+  const slots = Math.max(1, Math.ceil((n - 1) / 2));
+  const a = n > 1 ? side * (step / slots) * (spread / 2) : 0;
+  // Local −z is outside: out along their direction to the pavement (7–9 m), on their way.
+  const dist = 6.6 + (k % 3) * 0.9;
+  return itemSpot(door, `exit-${k}`, Math.sin(a) * dist, -1.1 - Math.cos(a) * dist, Math.PI, 'stand');
+}
+
+/** Stops for someone going round the team: beside each desk in use, or the team room's middle. */
+export function roamStops(slots: number[]): Spot[] {
+  const stops = slots.filter((s) => deskBySlot(s)).map((s) => deskGuest(s));
+  if (stops.length) return stops;
+  const r = layoutRooms()[0];
+  const cx = (r.x0 + r.x1) / 2;
+  const cz = (r.z0 + r.z1) / 2;
+  return [
+    { key: 'roam-a', x: cx - 1.5, z: cz, rotY: Math.PI / 2, pose: 'stand' },
+    { key: 'roam-b', x: cx + 1.5, z: cz + 1, rotY: -Math.PI / 2, pose: 'stand' },
+  ];
+}
+
+/** True if a point is out on the ground rather than on an office floor. */
+export function isOutside(p: P): boolean {
+  return !layoutRooms().some((r) => p.x > r.x0 - WALL_T / 2 && p.x < r.x1 + WALL_T / 2 && p.z > r.z0 - WALL_T / 2 && p.z < r.z1 + WALL_T / 2);
+}
+
+/** A loop round the building, a little way out from its walls. */
+export function patrolSpots(): Spot[] {
+  const b = layoutGeometry().bounds;
+  const m = 1.1;
+  const x0 = b.minX - m;
+  const x1 = b.maxX + m;
+  const z0 = b.minZ - m;
+  const z1 = b.maxZ + m;
+  const pts: [number, number][] = [
+    [x0, z0],
+    [(x0 + x1) / 2, z0],
+    [x1, z0],
+    [x1, (z0 + z1) / 2],
+    [x1, z1],
+    [(x0 + x1) / 2, z1],
+    [x0, z1],
+    [x0, (z0 + z1) / 2],
+  ];
+  // Looking in at the office from each stop: that's what there is to criticise.
+  const cx = (b.minX + b.maxX) / 2;
+  const cz = (b.minZ + b.maxZ) / 2;
+  return pts.map(([x, z], i) => ({ key: `patrol-${i}`, x, z, rotY: Math.atan2(cx - x, cz - z), pose: 'stand' }));
+}
+
+/** Fixed chairs at the meeting table. */
+const SEAT = { head: 0, guest: 2, interviewer: 3, talk: 4 };
+
 /** Where a worker should be, given what they are doing. */
 export function spotFor(w: Worker, index: number, all: Worker[]): Spot {
   const a: Activity = w.activity;
-  if (a === 'meeting') return meetingSeat(index);
+  const office = deskBySlot(DIRECTOR_SLOT);
+  // Meeting with you: round the table, the head at its head, the rest in chart order.
+  if (a === 'meeting') {
+    const table = all.filter((o) => o.activity === 'meeting').sort((p, q) => Number(q.role === 'director') - Number(p.role === 'director'));
+    return meetingSeat(Math.max(0, table.indexOf(w)));
+  }
+  if (a === 'visiting') return office ? deskGuest(DIRECTOR_SLOT) : meetingSeat(SEAT.head + 1);
+  if (a === 'interview') return meetingSeat(SEAT.guest);
+  if (a === 'interviewing' || w.role === 'interviewer') return meetingSeat(SEAT.interviewer);
+  // Talking: whoever started it goes over to the other, who stays put.
+  if (a === 'talking' && w.talk && !w.talk.host) {
+    const host = all.find((o) => o.id === w.talk!.with);
+    if (host?.role === 'director') return office ? deskGuest(DIRECTOR_SLOT) : meetingSeat(SEAT.head + 1);
+    if (host && deskBySlot(host.desk)) return deskGuest(host.desk);
+    return meetingSeat(SEAT.talk);
+  }
+  if (a === 'talking' && w.talk?.host && !deskBySlot(w.desk) && w.role !== 'director') return meetingSeat(SEAT.talk + 1);
+  if (w.role === 'director') return office ? deskSeat(DIRECTOR_SLOT) : meetingSeat(SEAT.head);
   if (a === 'coffee') return coffeeSpot(index);
   if (a === 'pairing' && w.pairWith) {
     const partner = all.find((o) => o.id === w.pairWith);
     if (partner) return deskGuest(partner.desk);
   }
-  return deskSeat(w.desk);
+  if (deskBySlot(w.desk)) return deskSeat(w.desk);
+  // No desk yet: wait in reception until you place it.
+  const waiting = all.filter((o) => !deskBySlot(o.desk) && o.role !== 'director' && !['organizer', 'interviewer', 'skeptic'].includes(o.role));
+  return receptionSpot(Math.max(0, waiting.indexOf(w))) ?? middle(`wait-${w.id}`);
 }
 
 // ---------------------------------------------------------------- walkable grid
@@ -127,9 +257,10 @@ function rebuildGrid(): void {
   if (gridRev === layoutRevision()) return;
   gridRev = layoutRevision();
   const { bounds, joints } = layoutGeometry();
-  origin = { x: bounds.minX, z: bounds.minZ };
-  COLS = Math.max(1, Math.round((bounds.maxX - bounds.minX) / CELL));
-  ROWS = Math.max(1, Math.round((bounds.maxZ - bounds.minZ) / CELL));
+  // The grid reaches out past the walls: people come in from outside, and the sceptic walks round.
+  origin = { x: bounds.minX - OUTSIDE, z: bounds.minZ - OUTSIDE };
+  COLS = Math.max(1, Math.round((bounds.maxX - bounds.minX + OUTSIDE * 2) / CELL));
+  ROWS = Math.max(1, Math.round((bounds.maxZ - bounds.minZ + OUTSIDE * 2) / CELL));
   // Everything starts blocked; open the inside of each room (clear of its walls) and each doorway.
   blocked = new Uint8Array(COLS * ROWS).fill(1);
   const keep = WALL_T / 2 + CLEARANCE;
@@ -144,6 +275,23 @@ function rebuildGrid(): void {
     }
   };
   for (const room of layoutRooms()) open(room.x0 + keep, room.z0 + keep, room.x1 - keep, room.z1 - keep);
+  // Outside: all the ground clear of the building's walls.
+  const rooms = layoutRooms();
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const p = centre(c, r);
+      if (!rooms.some((rm) => p.x > rm.x0 - keep && p.x < rm.x1 + keep && p.z > rm.z0 - keep && p.z < rm.z1 + keep)) blocked[r * COLS + c] = 0;
+    }
+  }
+  // The way in: a passage through the wall at the entrance.
+  const door = entranceItem();
+  const wall = door && wallOf(door, rooms);
+  if (door && wall) {
+    const along = wall.axis === 'x' ? door.x : door.z;
+    const a = onLine(wall, along - ENTRANCE.width / 2 + CLEARANCE, -keep - CELL);
+    const b = onLine(wall, along + ENTRANCE.width / 2 - CLEARANCE, keep + CELL);
+    open(Math.min(a.x, b.x), Math.min(a.z, b.z), Math.max(a.x, b.x), Math.max(a.z, b.z));
+  }
   for (const j of joints) {
     if (j.door === null) continue;
     const a = onLine(j, j.door - DOOR_W / 2 + CLEARANCE, -keep - CELL);
@@ -152,7 +300,7 @@ function rebuildGrid(): void {
   }
   for (const item of layoutItems()) {
     const info = KINDS[item.kind];
-    if (info.wall) continue;
+    if (info.wall || info.flat) continue;
     for (const rect of info.solid ?? [info.footprint]) {
       const grown = { ...rect, w: rect.w + CLEARANCE * 2, d: rect.d + CLEARANCE * 2 };
       const poly = corners(item, grown);

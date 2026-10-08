@@ -1,163 +1,98 @@
-import { DEFAULT_LOOK, SEED_LOOKS } from './look';
-import type { RoleId, RoleInfo, SimState, Task, Worker } from './types';
+import type { RoleId, RoleInfo, SimState } from './types';
 
-export const SCHEMA_VERSION = 5;
-export const DAY_START = 9 * 60;
-export const DAY_END = 18 * 60;
-export const MINUTES_PER_DAY = 24 * 60;
+export const SCHEMA_VERSION = 7;
+
+/** The head's desk is always this seat number, so their office can come furnished. */
+export const DIRECTOR_SLOT = -1;
+
+/** Every office has these four, one each: renamable and restylable, not removable. None has a desk. */
+export const REQUIRED_ROLES: RoleId[] = ['director', 'organizer', 'interviewer', 'skeptic'];
+/** Default names for the four you start with. */
+export const REQUIRED_NAMES: Record<string, string> = { director: 'Marta', organizer: 'Óscar', interviewer: 'Inés', skeptic: 'Bruno' };
 
 export const ROLES: Record<RoleId, RoleInfo> = {
-  research: { id: 'research', label: 'Research', color: '#c27f35' },
-  design: { id: 'design', label: 'Diseño UI', color: '#bf5f74' },
-  backend: { id: 'backend', label: 'Backend', color: '#3f7f70' },
-  pm: { id: 'pm', label: 'Producto', color: '#5568a6' },
-  qa: { id: 'qa', label: 'QA', color: '#82629f' },
+  director: {
+    id: 'director',
+    label: 'Dirección',
+    color: '#64748b',
+    title: 'Dirección',
+    about: 'Fija prioridades, decide al final y te entrega las conclusiones. Trabaja en la sala de reuniones.',
+  },
+  organizer: {
+    id: 'organizer',
+    label: 'Organización',
+    color: '#5568a6',
+    title: 'Organizador de proyectos',
+    about: 'Reparte y asigna las tareas, ronda por las mesas del equipo, prepara el orden del día, modera las reuniones y escribe las actas.',
+  },
+  interviewer: {
+    id: 'interviewer',
+    label: 'Entrevistas',
+    color: '#2f8a8a',
+    title: 'Entrevistas y cuentas',
+    about: 'Recibe a cada agente nuevo en recepción y lo entrevista para saber al detalle qué hará. También te entrevista a ti y convierte tus respuestas en briefs.',
+  },
+  research: {
+    id: 'research',
+    label: 'Investigación',
+    color: '#c27f35',
+    title: 'Investigación',
+    about: 'Competencia, mercado y tendencias, siempre con fuentes.',
+  },
+  design: {
+    id: 'design',
+    label: 'Diseño',
+    color: '#bf5f74',
+    title: 'Diseño',
+    about: 'Marca, referencias visuales y piezas (imágenes, logos).',
+  },
+  dev: {
+    id: 'dev',
+    label: 'Desarrollo',
+    color: '#3f7f70',
+    title: 'Desarrollo y producto',
+    about: 'Viabilidad, coste y revisión de la web y la analítica.',
+  },
+  marketing: {
+    id: 'marketing',
+    label: 'Marketing',
+    color: '#9a8a2a',
+    title: 'Marketing',
+    about: 'Contenido, calendario y publicación en redes.',
+  },
+  skeptic: {
+    id: 'skeptic',
+    label: 'Escéptico',
+    color: '#82629f',
+    title: 'Análisis crítico',
+    about: 'Ronda por fuera de la oficina criticando lo que ve, y entra a hablar con dirección cuando tiene algo que decir.',
+  },
 };
 
-export const ROLE_ORDER: RoleId[] = ['research', 'design', 'backend', 'pm', 'qa'];
+export const ROLE_ORDER: RoleId[] = ['director', 'organizer', 'interviewer', 'research', 'design', 'dev', 'marketing', 'skeptic'];
 
-/** New work the simulation can invent when a role runs out of backlog. */
-export const TASK_POOL: Record<RoleId, string[]> = {
-  research: [
-    'Entrevistas con 5 usuarios',
-    'Análisis de analítica del onboarding',
-    'Mapa de proveedores de pago',
-    'Auditoría de accesibilidad de la competencia',
-    'Resumen de tickets de soporte',
-  ],
-  design: [
-    'Pantalla de perfil',
-    'Estados vacíos del listado',
-    'Sistema de iconos',
-    'Pantalla de ajustes',
-    'Flujo de recuperar contraseña',
-  ],
-  backend: [
-    'Endpoint de pedidos',
-    'Webhooks de pagos',
-    'Caché de catálogo',
-    'Migración de base de datos',
-    'Rate limiting de la API',
-  ],
-  pm: [
-    'Priorizar backlog del sprint',
-    'Specs de notificaciones',
-    'Reunión de seguimiento con cliente',
-    'Roadmap del trimestre',
-  ],
-  qa: [
-    'Tests end-to-end del checkout',
-    'Regresión en móvil',
-    'Pruebas de carga de la API',
-    'Checklist de accesibilidad',
-  ],
-};
-
-export const BLOCK_REASONS = [
-  'Esperando feedback del cliente',
-  'Falta acceso al entorno',
-  'Dependencia de otra tarea',
-  'Dudas en los requisitos',
-  'Bug en el entorno de staging',
-];
-
-function w(
-  id: string,
-  name: string,
-  title: string,
-  role: RoleId,
-  desk: number,
-  taskId: string | null,
-  pairWith: string | null = null,
-): Worker {
-  return {
-    id,
-    name,
-    title,
-    role,
-    desk,
-    look: { ...(SEED_LOOKS[id] ?? DEFAULT_LOOK) },
-    energy: 70 + Math.round(Math.random() * 30),
-    activity: 'working',
-    taskId,
-    pairWith,
-    coffeeUntil: null,
-    idleSince: null,
-  };
-}
-
-function t(
-  id: string,
-  title: string,
-  role: RoleId,
-  estimate: number,
-  assigneeId: string | null = null,
-  progress = 0,
-): Task {
-  return {
-    id,
-    title,
-    role,
-    assigneeId,
-    status: assigneeId ? 'doing' : 'backlog',
-    progress,
-    reviewProgress: 0,
-    estimate,
-    createdAt: DAY_START,
-    doneAt: null,
-    blockedUntil: null,
-    blockReason: null,
-  };
-}
-
-export function createSeed(): SimState {
-  const start = MINUTES_PER_DAY + DAY_START + 10; // Día 1, 09:10
-  const tasks: Task[] = [
-    t('t1', 'Búsqueda de información: benchmark de competidores', 'research', 6, 'pepe', 35),
-    t('t2', 'Diseño UI: pantalla Home', 'design', 8, 'maria', 55),
-    t('t3', 'Diseño UI: pantalla Checkout', 'design', 7, 'manuel', 20),
-    t('t4', 'API de autenticación', 'backend', 9, 'lucia', 40),
-    t('t5', 'Planificación del sprint y specs', 'pm', 5, 'javier', 60),
-    t('t6', 'Plan de pruebas de la app', 'qa', 6, 'sara', 15),
-    t('t7', 'Personas y casos de uso', 'research', 4),
-    t('t8', 'Diseño UI: pantalla Login', 'design', 4),
-    t('t9', 'Guía de componentes', 'design', 6),
-    t('t10', 'Modelo de datos de productos', 'backend', 6),
-    t('t11', 'Integración pasarela de pago', 'backend', 10),
-    t('t12', 'Revisión de presupuesto con cliente', 'pm', 3),
-    t('t13', 'Tests de la API de autenticación', 'qa', 4),
-    t('t14', 'Encuesta de satisfacción', 'research', 3),
-  ];
-  for (const task of tasks) task.createdAt = start - 60;
-
-  const workers: Worker[] = [
-    w('pepe', 'Pepe', 'Analista de research', 'research', 0, 't1'),
-    w('maria', 'María', 'Diseñadora UI', 'design', 1, 't2'),
-    w('manuel', 'Manuel', 'Diseñador UI junior', 'design', 2, 't3', 'maria'),
-    w('lucia', 'Lucía', 'Desarrolladora backend', 'backend', 3, 't4'),
-    w('javier', 'Javier', 'Product manager', 'pm', 4, 't5'),
-    w('sara', 'Sara', 'QA', 'qa', 5, 't6'),
-  ];
-
+/** An office with only its three fixed roles; ops.ensureRequired() hires them. */
+export function createSeed(now = Date.now()): SimState {
   return {
     version: SCHEMA_VERSION,
-    agency: 'Estudio Brasa',
-    project: 'App web — Cliente Nórdica',
-    clock: start,
-    speed: 1,
-    lastMeetingDay: 0,
-    workers,
-    tasks,
-    feed: [
-      {
-        id: 1,
-        t: start,
-        kind: 'pair',
-        text: 'Manuel se sienta con María para sacar la pantalla Checkout',
-        workerId: 'manuel',
-        taskId: 't3',
-      },
-    ],
-    nextId: 100,
+    agency: '',
+    project: '',
+    clock: now,
+    working: false,
+    workers: [],
+    tasks: [],
+    feed: [],
+    conversations: [],
+    requests: [],
+    questions: [],
+    brief: { aspects: {}, kickedOff: false },
+    health: { overall: 0, aspects: [], threshold: 45, crisis: false },
+    meeting: null,
+    meetings: [],
+    events: [],
+    inbox: [],
+    hireIdeas: { status: 'idle', items: [], basis: '', at: 0, by: null, note: '' },
+    ai: { state: 'off', note: '', day: '', tokensToday: 0, limit: 0, resting: [], using: null, reason: null, back: null },
+    nextId: 1,
   };
 }

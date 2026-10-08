@@ -10,17 +10,23 @@
   <body>
     <header class="topbar">
       <div class="brand">
-        <h1 id="agency">Estudio Brasa</h1>
-        <p id="project" class="project"></p>
+        <h1><button class="brand-name" id="agency" type="button" title="Cambiar el nombre">Mi oficina</button></h1>
       </div>
       <div class="clock" aria-live="off">
         <span class="clock-day" id="clock-day"></span>
         <span class="clock-time" id="clock-time"></span>
       </div>
-      <div class="speed" role="radiogroup" aria-label="Velocidad de la simulación" id="speed"></div>
+      <button class="sky-btn" id="sky" type="button" aria-haspopup="menu" aria-expanded="false"></button>
+      <button class="work" id="working" type="button" role="switch" aria-checked="false">
+        <span class="work-track" aria-hidden="true"></span>
+        <span class="work-label">Trabajar</span>
+      </button>
       <dl class="kpis" id="kpis"></dl>
       <div class="top-actions">
         <button class="btn" id="edit-room" type="button" aria-pressed="false"></button>
+        <button class="ai-chip" id="ai-status" type="button" aria-haspopup="dialog" aria-expanded="false"></button>
+        <button class="btn btn-icon" id="settings" type="button" aria-label="Ajustes" title="Ajustes"></button>
+        <button class="btn btn-icon" id="sound" type="button" aria-pressed="true"></button>
         <button class="btn btn-icon" id="theme" type="button"></button>
         <button class="btn btn-ghost" id="reset" type="button"></button>
       </div>
@@ -28,20 +34,31 @@
 
     <main class="layout">
       <section class="stage" id="stage" aria-label="Oficina en 3D">
+        <div class="story" id="story" hidden></div>
         <div class="stage-hint" id="stage-hint">Arrastra para girar · rueda para acercar · clic en una persona</div>
         <div class="stage-hint stage-hint-edit" id="edit-hint" hidden>Pulsa un objeto y arrástralo para moverlo · pulsa el suelo para ajustar la sala · arrastra para girar la vista en 360°</div>
         <ul class="legend" id="legend" aria-label="Roles"></ul>
+        <aside class="chat-float" id="chat-float" aria-label="Chat" hidden>
+          <div class="chat-float-log" id="chat-log"></div>
+          <div id="chat-compose"></div>
+        </aside>
       </section>
 
       <aside class="panel">
         <div class="tabs" role="tablist" aria-label="Panel">
           <button role="tab" id="tab-team" aria-controls="pane-team" aria-selected="true">Equipo</button>
           <button role="tab" id="tab-tasks" aria-controls="pane-tasks" aria-selected="false" tabindex="-1">Tareas</button>
-          <button role="tab" id="tab-feed" aria-controls="pane-feed" aria-selected="false" tabindex="-1">Actividad</button>
+          <button role="tab" id="tab-talks" aria-controls="pane-talks" aria-selected="false" tabindex="-1">Conversaciones</button>
+          <button role="tab" id="tab-inbox" aria-controls="pane-inbox" aria-selected="false" tabindex="-1">Para ti<span class="tab-badge num" id="inbox-badge" hidden></span></button>
         </div>
         <div class="pane" role="tabpanel" id="pane-team" aria-labelledby="tab-team"></div>
         <div class="pane" role="tabpanel" id="pane-tasks" aria-labelledby="tab-tasks" hidden></div>
-        <div class="pane" role="tabpanel" id="pane-feed" aria-labelledby="tab-feed" hidden></div>
+        <div class="pane" role="tabpanel" id="pane-talks" aria-labelledby="tab-talks" hidden></div>
+        <div class="pane" role="tabpanel" id="pane-inbox" aria-labelledby="tab-inbox" hidden></div>
+        <div class="pane meeting-pane" id="pane-meeting" role="region" aria-label="Reunión" hidden>
+          <div id="meeting-log"></div>
+          <div id="meeting-compose"></div>
+        </div>
         <div class="pane pane-room" id="pane-room" hidden></div>
         <footer class="room-foot" id="room-foot" hidden></footer>
       </aside>
@@ -50,7 +67,13 @@
     <dialog id="task-dialog" class="dialog"></dialog>
     <dialog id="confirm-dialog" class="dialog dialog-sm"></dialog>
     <dialog id="look-dialog" class="dialog dialog-look" aria-label="Personalizar aspecto"></dialog>
+    <dialog id="settings-dialog" class="dialog dialog-settings" aria-labelledby="settings-title"></dialog>
+    <dialog id="dossier-dialog" class="dialog" aria-labelledby="dossier-title"></dialog>
+    <dialog id="change-dialog" class="dialog dialog-change"></dialog>
+    <dialog id="calendar-dialog" class="dialog dialog-calendar" aria-labelledby="calendar-title"></dialog>
+    <div class="toast" id="toast" role="alert" hidden></div>
+    <div class="offline" id="offline" role="status" hidden>Sin conexión con el servidor local · reintentando…</div>
 
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/src/boot.ts"></script>
   </body>
 </html>

@@ -1,83 +1,200 @@
 # Agentes de la oficina
 
-Cada trabajador de la oficina 3D pasa a ser un agente con un rol real. Este documento es el
-punto de partida: lista los agentes, qué hacen y qué herramientas necesitan. Lo iremos
-profundizando agente a agente (skills, permisos, flujos).
+La oficina 3D es una agencia (web + marketing) cuyos trabajadores son agentes de IA. Trabajan de verdad sobre **tu producto**:
 
-Todo es local: la app, la base de datos y el registro de lo que hace cada agente.
+- investigan;
+- diseñan;
+- escriben y publican;
+- se reúnen como profesionales y te entregan conclusiones.
 
-## Agentes
+Aprenden con el tiempo: en el año 5 saben más que en el año 1.
 
-### 1. Diseño (creativo)
-Crea y cuida todo lo visual.
-- Genera imágenes y piezas para redes, web y anuncios (API externa de imagen).
-- Busca tendencias visuales: Pinterest, Dribbble, Behance, cuentas de referencia.
-- Monta moodboards y mantiene la identidad de marca (colores, tipografías, estilo).
-- Entrega piezas listas al agente de Marketing.
+Todo corre en local. Cada persona que instala la app pone sus propias claves de IA y sus conectores (MCP).
 
-Herramientas: API de generación de imagen · MCP/API de Pinterest · búsqueda web · carpeta local de assets.
+## Cómo funciona el día
 
-### 2. Marketing
-Da a conocer el producto y consigue clientes.
-- Plan de contenidos y calendario; redacta los textos.
-- Publica y programa en X, LinkedIn, Reddit, Instagram…
-- Sigue cuentas, responde, participa en conversaciones relevantes.
-- Prospección: busca perfiles y empresas que encajen (clientes potenciales).
-- Mide resultados y ajusta.
+- **Reloj real** en tu zona horaria. No hay aceleración.
+- **Interruptor «Trabajar»** en la barra superior.
+  - Al encenderlo entran a trabajar todos los agentes activos.
+  - Al apagarlo terminan lo que están haciendo y se van a casa.
+- **Interruptor por agente** («Viene a trabajar»): desactiva a uno sin afectar al resto.
+- **Sol real**: la luz entra por las ventanas según la hora y la ubicación (Ajustes). Amanece, atardece y de noche se encienden las lámparas.
 
-Herramientas: MCP de X, LinkedIn y Reddit · búsqueda web · CRM local de leads.
+## Plantilla por defecto
 
-### 3. Product designer
-Decide qué construir y cómo se usa.
-- Flujos, wireframes y especificaciones de pantallas.
-- Convierte el feedback (de Atención al cliente y Revisor) en mejoras priorizadas.
-- Revisa la experiencia del producto en vivo.
-
-Herramientas: acceso de lectura al proyecto · tablero de tareas local.
-
-### 4. Revisor (observador del proyecto en vivo)
-Ve el estado real del producto en todo momento, **solo lectura**.
-- Estado del servicio, errores, rendimiento.
-- Detecta usuarios con problemas («tal usuario falla en el pago desde ayer»).
-- Avisa a quien corresponda y deja informes.
-
-Herramientas: MCP propio del proyecto, de solo lectura (ver abajo).
-
-### 5. Atención al cliente
-Atiende a los usuarios desde la web.
-- Chat en la web conectado al agente.
-- Responde con la base de conocimiento; escala a una persona cuando no sabe.
-- Registra cada conversación e incidencia en la base de datos local.
-- Pasa los problemas recurrentes al Product designer y al Revisor.
-
-Herramientas: widget de chat · base de conocimiento · base de datos local (conversaciones, incidencias).
-
-### Opcionales
-- **Coordinador** (el PM actual): reparte trabajo entre agentes, hace la daily, resume el día.
-- **Investigación** (el research actual): competencia, mercado, tendencias del sector.
-
-## Piezas comunes
-
-- **Base de datos local** (p. ej. SQLite): tareas, conversaciones, leads, publicaciones, informes, y el registro de cada acción de cada agente.
-- **MCP del proyecto, solo lectura**: expone estado, errores, usuarios y métricas. Sin herramientas de escritura y con un usuario de base de datos que solo puede leer, así la seguridad no depende de que el agente se porte bien.
-- **Cola de aprobación**: todo lo que sale fuera (publicar, seguir, escribir a alguien) espera un visto bueno, al menos al principio.
-- **La oficina 3D como panel**: cada agente es su personaje; su estado, su tarea y su actividad se ven en vivo, como ahora con la simulación.
-
-## Reparto inicial propuesto (a confirmar)
-
-| Personaje | Agente |
+| Rol | Qué aporta |
 |---|---|
-| Pepe | Investigación |
-| María | Diseño |
-| Manuel | Product designer |
-| Lucía | Revisor |
-| Javier | Coordinador |
-| Sara | Atención al cliente |
+| **Dirección** (jefe, raíz del árbol) | Prioridades, decisión final, te entrega las conclusiones |
+| **Organizador / PM** | Orden del día, modera turnos, actas, convierte acuerdos en tareas |
+| **Entrevistador / cuentas** | Te entrevista y convierte tus respuestas en briefs. El primer día rellena el perfil de tu empresa y tu producto. |
+| **Investigador** | Competencia, mercado y tendencias, siempre con fuentes |
+| **Diseño** | Marca, referencias visuales, piezas (imágenes, logos) |
+| **Dev / producto** | Viabilidad, coste, revisión de la web y la analítica |
+| **Marketing** (ampliable a equipo) | Contenido, calendario, publicación y respuestas en redes |
+| **Escéptico** (staff, fuera de la cadena) | Ronda por fuera de la oficina criticando lo que ve. Entra por la puerta a hablar con Dirección cuando tiene algo que decir. No manda en nadie y nadie le manda callar. |
 
-Marketing necesitaría un séptimo personaje o sustituir a uno de los opcionales.
+**Puestos fijos:** Dirección (siempre el jefe, con su despacho), Organización (ronda por las mesas del equipo), Entrevistas (en la sala de reuniones; recibe y entrevista a cada agente nuevo) y Escéptico (ronda fuera) vienen con la oficina, uno de cada. Se pueden renombrar, personalizar y desactivar, no quitar ni cambiar de rol. Solo Dirección tiene mesa. El resto de agentes los añades tú: entran por la puerta a recepción, Entrevistas los recibe y los lleva a la sala de reuniones, y su mesa queda «por colocar» en el editor; al colocarla va a su sitio por defecto (dos columnas de tres en la zona de trabajo).
 
-## Por decidir cuando profundicemos
-- API de imagen (y presupuesto).
-- Cuentas y permisos de cada red social.
-- Qué acciones necesitan aprobación y cuáles no.
-- Stack del backend local y cómo se ejecutan los agentes.
+**Persona ≠ rol.** Cada agente tiene, además del rol:
+- carácter;
+- trayectoria;
+- relaciones (con quién congenia y con quién choca);
+- forma de hablar.
+
+Ante sus compañeros se comportan como personas reales. **Lo que te llega a ti es verificable:** toda afirmación sobre el mundo lleva su fuente.
+
+## Jerarquía
+
+- **Un árbol, no una lista.** Cada agente tiene un `reportsTo`. Por defecto todos dependen del jefe.
+- **Supervisor** = cualquier agente con subordinados. Si marketing crece a 4 agentes, uno de ellos pasa a supervisarlos.
+- **Organigrama** literal en el panel: se arrastra una tarjeta sobre otra para cambiar de jefe.
+- **Límites:** profundidad máxima 3 (jefe → supervisor → agente). Sin ciclos. Un solo jefe.
+- **Sugeridos para tu proyecto:** al abrir «Añadir agente», Dirección propone 2–4 puestos concretos según el dossier, el equipo y el trabajo abierto (una llamada a la IA, solo cuando algo ha cambiado o pides otras). Arriba van también las propuestas de contratación que el equipo te haya enviado. Sin IA, sugiere los roles que nadie cubre. Cuando tiene sugerencias nuevas lo dice en voz alta (burbuja sobre Dirección y aviso en «Para ti» con «Ver sugerencias»), y si el dossier o el equipo cambian lo repiensa sola, como mucho cada 6 h.
+
+**Por qué un solo jefe:** con 6–8 agentes basta. Dos autoridades LLM se contradicen y producen reuniones sin fin. Los mandos intermedios solo se justifican a partir de unas 8–10 personas por jefe.
+
+## Salas y reuniones
+
+- **Cada equipo tiene su sala.** El supervisor pasea por ella de mesa en mesa y va primero a quien está bloqueado. También tiene su propia mesa y trabaja.
+- **Sala de reuniones grande:** jefe, supervisores y Escéptico. Sin supervisores, va todo el equipo. Se puede invitar a un agente concreto cuando su tema lo pide.
+
+**Protocolo:**
+```
+Organizador abre con el orden del día → cada uno aporta → Escéptico ataca → réplicas → Dirección decide → acta → bandeja «Informes»
+```
+
+**Cómo te preguntan** (reuniones, avisos y preguntas sueltas): el equipo sabe qué falta, así que guía él. Una pregunta cada vez sobre un dato concreto (qué hueco del dossier o qué tarea bloqueada), con 2-3 opciones o un ejemplo y para qué lo necesitan. Nunca «¿qué información falta?» ni jerga (QA, KPI, CTA…). Si respondes «no sé», te proponen una opción y te preguntan si te vale. Al bajar la salud, el aviso dice exactamente qué falta, qué está bloqueado y qué preguntas tienes pendientes.
+
+**Escalado de decisiones:**
+- Lo que afecta solo al equipo lo decide el supervisor.
+- Lo que afecta a otro equipo, al presupuesto o a la marca sube al jefe.
+- Lo que afecta a tu estrategia sube a ti.
+
+## Aprendizaje
+
+- **Memoria personal** de cada agente: lo que ha aprendido, p. ej. "a Adrián no le gustan los informes largos".
+- **Memoria de empresa:** actas, decisiones, perfil del producto, guía de marca, errores y aciertos.
+- **Reflexión diaria** al cerrar la oficina, con compactación semanal. La experiencia se acumula sin que crezca el contexto.
+
+## IA
+
+**Dónde se configura:** Ajustes → IA (lista de IA por prioridad, claves de Anthropic y Groq, dirección de Ollama, imágenes) y Ajustes → Conectores (tus apps de Composio y, como sección avanzada, la biblioteca de MCP reutilizable, con plantillas revisadas y versiones fijadas). La pestaña Conectores solo aparece cuando la clave de Composio está puesta en Ajustes → IA. Cada agente tiene en su ficha una sección IA: proveedor (el de Ajustes u otro), la clave de Ajustes de ese proveedor o una propia, un modelo, y los conectores que necesite (los elegirá él mismo cuando su IA funcione; tú puedes corregirlo).
+
+- **Texto:** Claude por defecto; Groq (modelos abiertos muy rápidos, p. ej. GPT-OSS 120B) y Ollama en local como alternativas. Cada agente puede usar uno distinto.
+- **Lista por prioridad:** en Ajustes → IA pones varias IA (proveedor + modelo) y las ordenas arrastrando (o con las flechas sobre el asa). Se piensa con la primera disponible. Si una llega a un límite (por minuto, del día o sin saldo) o falla (clave no válida, modelo retirado, sin respuesta), descansa un tiempo y la llamada pasa a la siguiente. Cuando se recupera, se vuelve a ella. Solo si están todas en pausa se detiene la oficina, y el panel dice cuándo vuelve la primera. En Groq, cada modelo tiene su propio cupo. Si un agente tiene su propia IA en la ficha, esa va delante de la lista.
+- **Modo al grano (por defecto):** entre ellos y en sus notas hablan en estilo telegráfico (sin artículos, relleno ni cortesías, causa → efecto), y el dossier se guarda comprimido. Así gastan menos en lo que dicen y en todo lo que se relee después: historial, notas y dossier. Contigo, en reuniones, preguntas y respuestas a encargos, y en los entregables escriben con frases completas. Se cambia en Ajustes → IA → Gasto.
+  - Sonnet para el trabajo, Opus para Dirección y las decisiones, Haiku para charla y paseos.
+  - Configurable por agente.
+- **Imagen:** fal.ai (general) y Recraft (logos y vectores), ambos con MCP oficial. ComfyUI local opcional.
+- **Gasto:** tope diario en $. Al alcanzarlo, los agentes se van a casa.
+
+## Conectores (MCP)
+
+| Uso | Conector | Notas |
+|---|---|---|
+| Búsqueda | Exa o Tavily (oficiales) | capa gratuita |
+| Leer webs | Firecrawl + Fetch (oficiales) | |
+| X | xdevplatform/xmcp (oficial) | pago por uso: $0.015 por post, **$0.20 si lleva enlace**; limitar herramientas con `X_API_TOOL_ALLOWLIST` |
+| Reddit | jordanburke/reddit-mcp-server (API oficial) | las apps nuevas de Reddit requieren aprobación manual (2–4 semanas) |
+| LinkedIn | **MCP propio**, API oficial | publicar como tú (autoservicio). Página de empresa con la Community Management API (requiere aprobación). Leer el feed o perfiles ajenos **no existe** en la API oficial. |
+| Pinterest | **MCP propio**, API v5 oficial | tableros y pines: leer y crear |
+| Instagram / Threads | mikusnuz/meta-mcp (Graph API) | revisar el código antes de darle tokens |
+| Analítica | GA4 (oficial Google), mcp-gsc, YouTube Data API | |
+| Tendencias | MCP propio: Hacker News + RSS | |
+
+**Descartados:**
+- **stickerdaniel/linkedin-mcp-server:** el código está limpio, pero controla tu sesión del navegador (lee las cookies de Chrome vía Keychain). LinkedIn lo prohíbe y banea cuentas.
+- **collactivelabs/pinterest-mcp-server:** abandonado, el modo stdio está roto y `npm start` expone tus tokens sin autenticación a la red local.
+- **Dribbble, Behance y Google Trends:** sin API usable; solo se puede hacer scraping.
+
+**Cómo funcionan** (`server/mcpHost.ts`, SDK oficial de MCP):
+- Cada conector arranca la primera vez que lo necesita un agente que lo tiene marcado, y se cierra tras 15 minutos sin uso.
+- Un programa local recibe un entorno mínimo (lo básico del sistema más sus propias claves de la bóveda), nunca el del servidor.
+- «Probar», en Ajustes → Conectores → Servidores MCP, lo arranca y dice cuántas herramientas trae o por qué falla.
+
+**Reglas:**
+- Cada agente solo ve los conectores marcados en su ficha (IA).
+- **Toda acción de escritura hacia fuera** (publicar, seguir, escribir a alguien) pasa por la cola de aprobación, salvo que la marques como automática.
+- Lo leído de la web o de las redes se trata como no confiable (prompt injection).
+
+## Apps (Composio)
+
+**Ajustes → Conectores** conecta las apps del propietario a través de [Composio](https://platform.composio.dev): más de 1000 (Gmail, Slack, Notion, Drive, GitHub, Instagram, LinkedIn…). Así se aplica la skill `connect` de [awesome-claude-skills](https://github.com/ComposioHQ/awesome-claude-skills).
+
+**Dos tipos de clave** (se pone en Ajustes → IA; la pestaña Conectores solo aparece con ella):
+- **`ck_…`, Composio Connect** (Settings → Sessions & API Key): la cuenta normal de Composio. No tiene SDK; la oficina habla MCP con `connect.composio.dev/mcp` (`server/composioConnect.ts`) y la clave viaja solo en la cabecera `x-consumer-api-key`, sin seguir redirecciones. Conectas en el panel o en la web de Composio; los dos lugares ven lo mismo. Como Connect no lista su catálogo, el panel muestra las más usadas y deja conectar cualquier otra por su id.
+- **`ak_…`, proyecto de desarrollador** (platform.composio.dev → Settings → Project Settings → API Keys): SDK `@composio/core`, con el catálogo completo.
+
+**Qué se guarda y dónde:**
+- La clave de Composio va a la bóveda (`composio_api_key`).
+- Con clave de proyecto, un identificador anónimo (`oficina-…`) te representa ante Composio; nunca se usan tu nombre ni tu correo.
+- El acceso a cada app (OAuth) lo guarda Composio en tu cuenta de Composio. Quien copie la oficina no se lleva ninguno.
+
+**Conectar:** cada app abre su propia página para dar permiso; el panel espera hasta que queda conectada.
+
+**Permiso por app:**
+
+| Permiso | Qué pueden hacer |
+|---|---|
+| Solo leer | consultar, nunca escribir |
+| Escribir con tu permiso (por defecto) | lo que escriban te llega a «Para ti» para aprobar o descartar |
+| Escribir sin preguntar | actúan solos |
+
+**Herramientas de los agentes:** el mismo patrón que las skills de Composio. Los agentes hacen `ver_apps` → `buscar_accion` (la acción y sus datos actuales, nunca de memoria) → `usar_accion`.
+- Leer va directo.
+- Escribir sigue el permiso de esa app.
+- Durante 30 minutos después de leer algo de fuera (una web, una app), cualquier escritura pide tu aprobación aunque la app esté en «sin preguntar».
+- Todo resultado se trata como datos y pasa por la redacción de la bóveda.
+
+**Webs:** `leer_web` lee directo. Si la página solo se ve con JavaScript, la abre [agent-browser](https://github.com/vercel-labs/agent-browser) en una sesión desechable limitada al dominio de esa web, que se cierra al terminar. Las webs que el propietario pega en reuniones o encargos se leen antes de responder y quedan en el dossier.
+
+## Chat con un agente
+
+- **Mientras contesta** se ve qué hace («Consultando Pinterest», «Leyendo ejemplo.com»), con el logo de la app y las imágenes que está mirando. Al terminar, los pasos quedan plegados en una línea encima de su respuesta.
+- **Tú le envías** imágenes y documentos (botón del clip, arrastrar o pegar): PNG, JPG, WebP, GIF, PDF, texto, Markdown, CSV, JSON, Word, Excel y PowerPoint, hasta 20 MB. Los documentos los lee (el servidor saca su texto: `unpdf` para PDF, el XML de Office con `fflate`). Las imágenes las ve si su IA ve (Claude, Llama 4…); si no, se usa Llama 4 de Groq o NVIDIA con tu clave para esa respuesta.
+- **Te envía** (herramienta `enviar`) imágenes que le haya devuelto una herramienta en esa conversación, nunca direcciones inventadas, y documentos que redacta (Markdown, CSV o texto). Las imágenes se amplían en el chat y llevan a su página original.
+- **Dónde se guardan** (`server/files.ts`): en la carpeta de datos (`files/`, permisos 700), fuera del proyecto. Se comprueba el tipo real por su contenido; HTML, SVG y ejecutables no entran. Se sirven solo con el token de la sesión: imágenes y PDF se muestran, lo demás se descarga, nunca se ejecuta.
+
+## Seguridad y datos
+
+**Datos fuera del proyecto.** Viven en el directorio de datos de tu usuario:
+- `~/Library/Application Support/Oficina3D` en macOS;
+- `%APPDATA%\Oficina3D` en Windows;
+- `~/.local/share/Oficina3D` en Linux.
+
+Compartir el código o un build no arrastra nada.
+
+**Bóveda cifrada** (`vault.enc`, AES-256-GCM):
+- La clave vive en el llavero del sistema. Una copia del archivo no sirve en otra cuenta ni en otra máquina.
+- Sin llavero, se usa una frase de paso (`OFICINA_PASSPHRASE`).
+
+**El navegador nunca lee secretos.** Puede guardarlos y borrarlos, pero solo ve el nombre y los últimos 4 caracteres.
+
+**Servidor local blindado:**
+- solo escucha en `127.0.0.1`;
+- comprueba `Host` (contra DNS rebinding) y `Origin` (contra otras webs abiertas en el navegador);
+- pide un token por arranque para cualquier cambio.
+
+**La configuración guarda referencias, no valores** (`${secret:nombre}`). Cada MCP recibe solo sus propias claves.
+
+**Build limpio:** `npm run build` falla si encuentra algo con forma de clave en `dist/`.
+
+## Tu proyecto real (oficina-link)
+
+Ajustes → Proyecto conecta el proyecto para el que trabaja la oficina: en este ordenador, en un servidor por SSH (sin puertos abiertos) o por HTTPS (token del que el servidor solo guarda el hash). El enlace es un solo archivo sin dependencias (`link/oficina-link.mjs`, MCP por stdio o HTTP) y es lo único que toca el proyecto.
+
+- **Doble llave:** el proyecto decide qué comparte en `oficina.link.json`; tú solo puedes recortarlo. La oficina fija el hash del manifiesto: si cambia, todo se para hasta que lo apruebes otra vez (y la escritura vuelve a apagada).
+- **Lectura** (por defecto): estructura, archivos, búsqueda, git de solo lectura, cambios en vivo y fuentes de datos (`oficina.sources.mjs`: funciones de lectura que el proyecto publica, nunca SQL libre).
+- **Siempre bloqueado:** `.env`, claves, `.git`, `node_modules`, credenciales, bases de datos, enlaces simbólicos y lo ignorado por git. Los secretos salen tachados.
+- **Escritura** (no recomendada): «Proponer» → llega a «Para ti» con la diferencia y se aplica al aprobar; «Directo» exige escribir el nombre del proyecto. Solo Dirección, Desarrollo, Diseño y Marketing. Nunca package.json, lockfiles, CI, configs de build ni scripts; nunca comandos ni git. Cada cambio se puede deshacer.
+
+**Límite:** un MCP de terceros malicioso puede robar su propio token. Por eso solo se usan conectores revisados, con versiones fijadas y permisos mínimos.
+
+## Fases
+
+1. ✅ **Base:** servidor local, bóveda cifrada, SQLite, reloj real, interruptores, sol real.
+2. **Organización:** ✅ sin datos simulados, cuatro puestos fijos, altas y bajas, organigrama, recepción con puerta (entradas y salidas escalonadas, cada uno por su camino), bienvenida con Entrevistas, despacho de Dirección, mesas por colocar, luz de techo al anochecer, Ajustes de IA y biblioteca de conectores. Pendiente: salas de equipo, paseo del supervisor, reuniones por jerarquía.
+3. **Agentes con IA (en marcha):** ✅ conversaciones reales y simultáneas con herramientas (equipo, tareas, notas, leer webs), bocadillos y enlace en 3D, pestaña Conversaciones (exportar y borrar), encargos al Organizador en texto libre, mensajes a cada agente (lo habla con el Organizador), dudas que pausan la tarea y suben al superior, cola de tareas por persona, tareas continuas (sin final ni %, van a la par de la cola, con una entrega cada rato, hasta que tú las paras), trabajo real en la mesa con avances, reunión inicial y reuniones contigo, en las que habla una persona por turno y deciden entre ellos quién responde; lo que aclaras entra en el dossier en el momento, así que la salud sube mientras hablas (dossier del producto y acta), salud del proyecto (claridad, foco, orden, avance, bloqueos) con crisis por debajo del 45 %, límites del proveedor respetados (cupo por minuto y diario). calendario (objeto de pared en 3D que pinta el mes, ventana con mes y día, «Próximo» en la barra de arriba; el Organizador te avisa sin gastar tokens el día antes, esa mañana y una hora antes, y los agentes pueden agendar), bandeja «Para ti» con todo lo que te dicen a ti (recordatorios, preguntas, respuestas a encargos, reuniones de crisis y propuestas de contratación con botón «Contratar»), con avisos flotantes abajo a la izquierda; la actividad pasa a un botón dentro de Equipo. Pendiente: conectores MCP en el bucle de trabajo, reflexión diaria.
+4. **Reuniones reales y aprendizaje:** actas, memorias, reflexión diaria, entrevista inicial.
+5. **Conectores:** anfitrión MCP, Ajustes → Conectores, cola de aprobación.
+6. **MCP propios e imagen:** Pinterest, LinkedIn, HN/RSS, fal.ai y Recraft.

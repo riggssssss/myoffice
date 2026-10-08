@@ -787,7 +787,7 @@ export class Avatar {
 
     switch (activity) {
       case 'working': {
-        typing(role === 'backend' ? 22 : 13);
+        typing(role === 'dev' ? 22 : 13);
         if (role === 'research' && t % 7 > 4.2) {
           // Hand to chin while reading results.
           p.armRX = -0.85;
@@ -803,7 +803,7 @@ export class Avatar {
           p.armRZ = -0.15 + Math.sin(t * 2.2) * 0.1;
           p.armLX = -0.3;
           p.elbowL = -0.9;
-        } else if (role === 'pm' && t % 9 > 7) {
+        } else if ((role === 'organizer' || role === 'director') && t % 9 > 7) {
           p.headY = Math.sin(t * 2) * 0.6;
           p.look = Math.sin(t * 2) > 0 ? 0.9 : -0.9;
         }
@@ -867,6 +867,12 @@ export class Avatar {
         p.look = 0;
         break;
       case 'idle':
+      case 'away':
+      case 'patrolling':
+      case 'visiting':
+      case 'roaming':
+      case 'interview':
+      case 'interviewing':
         p.torsoX = p.pelvisY === POSE_Y.stand ? 0 : -0.15;
         p.armLX = -0.15;
         p.armRX = -0.15;

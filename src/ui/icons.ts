@@ -1,9 +1,44 @@
 import {
   Armchair,
+  Paperclip,
+  FileText,
+  FileSpreadsheet,
+  File as FileIcon,
+  Image as ImageIcon,
+  Globe,
+  ChevronDown,
+  Presentation,
+  ExternalLink,
+  Plug,
+  Bell,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  History,
+  Inbox,
+  CircleStop,
+  Repeat,
+  ArrowUp,
+  Download,
+  MessageCircle,
   ArrowLeft,
   Check,
+  Compass,
   Copy,
+  Footprints,
+  Handshake,
+  Route,
+  MessageSquareWarning,
+  DoorOpen,
+  Megaphone,
+  MessageCircleQuestion,
+  Scale,
+  UserPlus,
+  GripVertical,
+  House,
   RotateCw,
+  Lightbulb,
+  Settings,
   Trash2,
   Undo2,
   CircleCheck,
@@ -14,6 +49,8 @@ import {
   ListChecks,
   MessagesSquare,
   Moon,
+  Volume2,
+  VolumeX,
   OctagonAlert,
   Pause,
   PenTool,
@@ -24,6 +61,10 @@ import {
   Shirt,
   Shuffle,
   Sun,
+  Cloud,
+  CloudSun,
+  CloudRain,
+  CloudLightning,
   Users,
   X,
   createElement,
@@ -37,6 +78,9 @@ function svg(node: IconNode, size = 16): string {
 
 export const icon = {
   back: (s?: number) => svg(ArrowLeft, s),
+  talk: (s?: number) => svg(MessageCircle, s),
+  send: (s?: number) => svg(ArrowUp, s),
+  download: (s?: number) => svg(Download, s),
   close: (s?: number) => svg(X, s),
   edit: (s?: number) => svg(Pencil, s),
   plus: (s?: number) => svg(Plus, s),
@@ -47,6 +91,13 @@ export const icon = {
   alert: (s?: number) => svg(OctagonAlert, s),
   sun: (s?: number) => svg(Sun, s),
   moon: (s?: number) => svg(Moon, s),
+  skyAuto: (s?: number) => svg(CloudSun, s),
+  skyClear: (s?: number) => svg(Sun, s),
+  skyOvercast: (s?: number) => svg(Cloud, s),
+  skyRain: (s?: number) => svg(CloudRain, s),
+  skyStorm: (s?: number) => svg(CloudLightning, s),
+  soundOn: (s?: number) => svg(Volume2, s),
+  soundOff: (s?: number) => svg(VolumeX, s),
   shirt: (s?: number) => svg(Shirt, s),
   shuffle: (s?: number) => svg(Shuffle, s),
   room: (s?: number) => svg(Armchair, s),
@@ -56,14 +107,43 @@ export const icon = {
   trash: (s?: number) => svg(Trash2, s),
   tick: (s?: number) => svg(Check, s),
   undo: (s?: number) => svg(Undo2, s),
+  settings: (s?: number) => svg(Settings, s),
+  home: (s?: number) => svg(House, s),
+  userPlus: (s?: number) => svg(UserPlus, s),
+  idea: (s?: number) => svg(Lightbulb, s),
+  refresh: (s?: number) => svg(RotateCw, s),
+  grip: (s?: number) => svg(GripVertical, s),
+  ongoing: (s?: number) => svg(Repeat, s),
+  calendar: (s?: number) => svg(CalendarDays, s),
+  prev: (s?: number) => svg(ChevronLeft, s),
+  next: (s?: number) => svg(ChevronRight, s),
+  inbox: (s?: number) => svg(Inbox, s),
+  bell: (s?: number) => svg(Bell, s),
+  history: (s?: number) => svg(History, s),
+  stop: (s?: number) => svg(CircleStop, s),
+  critique: (s?: number) => svg(MessageSquareWarning, s),
+  search: (s?: number) => svg(Search, s),
+  external: (s?: number) => svg(ExternalLink, s),
+  plug: (s?: number) => svg(Plug, s),
+  attach: (s?: number) => svg(Paperclip, s),
+  doc: (s?: number) => svg(FileText, s),
+  sheet: (s?: number) => svg(FileSpreadsheet, s),
+  slides: (s?: number) => svg(Presentation, s),
+  file: (s?: number) => svg(FileIcon, s),
+  image: (s?: number) => svg(ImageIcon, s),
+  globe: (s?: number) => svg(Globe, s),
+  chevron: (s?: number) => svg(ChevronDown, s),
 };
 
 const ROLE_WORK: Record<RoleId, IconNode> = {
+  director: Compass,
+  organizer: ListChecks,
+  interviewer: MessageCircleQuestion,
   research: Search,
   design: PenTool,
-  backend: CodeXml,
-  pm: ListChecks,
-  qa: ClipboardCheck,
+  dev: CodeXml,
+  marketing: Megaphone,
+  skeptic: Scale,
 };
 
 export function activityIcon(activity: Activity, role: RoleId, size = 14): string {
@@ -82,6 +162,19 @@ export function activityIcon(activity: Activity, role: RoleId, size = 14): strin
       return svg(OctagonAlert, size);
     case 'idle':
       return svg(Hourglass, size);
+    case 'away':
+      return svg(House, size);
+    case 'patrolling':
+      return svg(Footprints, size);
+    case 'visiting':
+      return svg(MessageSquareWarning, size);
+    case 'roaming':
+      return svg(Route, size);
+    case 'interview':
+    case 'interviewing':
+      return svg(Handshake, size);
+    case 'talking':
+      return svg(MessageCircle, size);
   }
 }
 
@@ -93,6 +186,13 @@ export const ACTIVITY_LABEL: Record<Activity, string> = {
   coffee: 'Pausa café',
   blocked: 'Con bloqueo',
   idle: 'Sin tarea',
+  away: 'Fuera de la oficina',
+  patrolling: 'Rondando fuera',
+  visiting: 'Hablando con dirección',
+  roaming: 'Recorriendo el equipo',
+  interview: 'En su bienvenida',
+  interviewing: 'Recibiendo a alguien nuevo',
+  talking: 'Conversando',
 };
 
 export function feedIcon(kind: FeedKind, size = 14): string {
@@ -109,6 +209,13 @@ export function feedIcon(kind: FeedKind, size = 14): string {
     create: Plus,
     edit: Pencil,
     day: Sun,
+    office: DoorOpen,
+    team: UserPlus,
+    critique: MessageSquareWarning,
+    interview: Handshake,
+    talk: MessageCircle,
+    question: MessageCircleQuestion,
+    calendar: CalendarDays,
   };
   return svg(map[kind], size);
 }

@@ -344,12 +344,12 @@ export class TotoroAvatar {
     const m = this.still(this.spot?.pose ?? 'seat');
     switch (activity) {
       case 'working':
-        // Busy little bounce while typing; research tilts its head, PM looks round the room.
-        m.squash += Math.sin(t * (role === 'backend' ? 18 : 12)) * 0.012;
+        // Busy little bounce while typing; research tilts its head, leads look round the room.
+        m.squash += Math.sin(t * (role === 'dev' ? 18 : 12)) * 0.012;
         m.leanX = 0.08;
         m.arms = -0.25 + Math.sin(t * 12) * 0.05;
         if (role === 'research' && t % 7 > 4.2) m.roll = 0.12;
-        if (role === 'pm' && t % 9 > 7) m.turn = Math.sin(t * 2) * 0.5;
+        if ((role === 'organizer' || role === 'director') && t % 9 > 7) m.turn = Math.sin(t * 2) * 0.5;
         break;
       case 'reviewing':
         m.leanX = 0.12 + Math.max(0, Math.sin(t * 1.4)) * 0.05;
@@ -383,6 +383,12 @@ export class TotoroAvatar {
         m.roll = Math.sin(t * 1.2) * 0.07;
         break;
       case 'idle':
+      case 'away':
+      case 'patrolling':
+      case 'visiting':
+      case 'roaming':
+      case 'interview':
+      case 'interviewing':
         m.turn = Math.sin(t * 0.4) * 0.5;
         m.leanX = -0.04;
         break;

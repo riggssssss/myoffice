@@ -1,10 +1,12 @@
 import * as THREE from 'three';
+import { calendarTexture } from './calendarBoard';
+import { woodFinish } from './wood';
 import { ROLES, ROLE_ORDER } from '../sim/seed';
-import { CHAIR_FABRICS, CHAIR_FRAMES, WINDOW_FRAMES, windowModel, type ChairPack, type ChairStyle, type DeskStyle, type Item, type WindowStyle } from '../sim/layout';
+import { CHAIR_FABRICS, CHAIR_FRAMES, ENTRANCE, WALL_T, WINDOW_FRAMES, windowModel, type ChairPack, type ChairStyle, type DeskStyle, type Item, type WindowStyle } from '../sim/layout';
 import { placeComputer } from './computer';
 import { DESK_SEAT, MEETING_SEATS, meetingChair } from './navigation';
-import type { ScenePalette } from './palette';
-import { placePlant, type ChairKind, type DecorKind, type DeskKind, type PlantKind, type WindowKind } from './plants';
+import { texture, type ScenePalette } from './palette';
+import { placePlant, type ChairKind, type DecorKind, type DeskKind, type PlantKind, type SofaKind, type WindowKind } from './plants';
 
 /** Models that arrive after start-up; until then each object shows a simple stand-in. */
 export interface Assets {
@@ -14,6 +16,7 @@ export interface Assets {
   plants: Map<PlantKind, THREE.Object3D> | null;
   decor: Map<DecorKind, THREE.Object3D> | null;
   windows: Map<WindowKind, THREE.Object3D> | null;
+  sofas: Map<SofaKind, THREE.Object3D> | null;
 }
 
 export type MatFn = (slot: keyof ScenePalette, extra?: THREE.MeshStandardMaterialParameters) => THREE.MeshStandardMaterial;
@@ -24,6 +27,8 @@ export interface Built {
   screen?: THREE.MeshStandardMaterial;
   /** Desks: the reading lamp, on at night. */
   lamp?: THREE.PointLight;
+  /** Entrance: the leaf's hinge; turning it (negative y) swings the door into the room. */
+  door?: THREE.Object3D;
 }
 
 function box(w: number, h: number, d: number, mat: THREE.Material, x = 0, y = 0, z = 0): THREE.Mesh {
@@ -80,15 +85,6 @@ const DECOR_MODEL: Record<string, DecorKind> = { wickerVase: 'WickerVase', bush:
 // ---------------------------------------------------------------- desk finishes
 
 const finishes = new Map<string, THREE.MeshStandardMaterial>();
-let oakMap: THREE.Texture | null = null;
-function oak(): THREE.Texture {
-  if (!oakMap) {
-    oakMap = new THREE.TextureLoader().load(`${import.meta.env.BASE_URL}models/oak.jpg`);
-    oakMap.colorSpace = THREE.SRGBColorSpace;
-    oakMap.anisotropy = 4;
-  }
-  return oakMap;
-}
 
 /** Shared material for one finish; 'theme' finishes come from the palette so they follow day/night. */
 function finish(key: string, make: () => THREE.MeshStandardMaterialParameters): THREE.MeshStandardMaterial {
@@ -106,10 +102,13 @@ function topMaterial(style: DeskStyle, m: MatFn): THREE.Material {
     case 'theme':
       return m('wood');
     case 'oak':
-      return finish('top:oak', () => ({ map: oak(), roughness: 0.62 }));
+      return finish('top:oak', () => woodFinish('natural'));
     case 'walnut':
-      // Same grain, darker stain.
-      return finish('top:walnut', () => ({ map: oak(), color: '#8c6448', roughness: 0.6 }));
+      return finish('top:walnut', () => woodFinish('red'));
+    case 'smoked':
+      return finish('top:smoked', () => woodFinish('smoked'));
+    case 'ebony':
+      return finish('top:ebony', () => woodFinish('dark'));
     case 'white':
       return finish('top:white', () => ({ color: '#eeebe4', roughness: 0.55 }));
     case 'grey':
@@ -231,11 +230,25 @@ export function buildItem(item: Item, m: MatFn, assets: Assets, look: RoomLook):
     case 'window':
       buildWindow(g, assets, look.windows);
       break;
+    case 'entrance':
+      out.door = buildEntrance(g, m);
+      break;
     case 'shelf':
       buildShelf(g, m);
       break;
+    case 'rug':
+      buildRug(g);
+      break;
+    case 'sofa': {
+      const model = assets.sofas?.get('Laszlo');
+      g.add(model ? model.clone(true) : placeholderSofa(m));
+      break;
+    }
     case 'whiteboard':
       buildWhiteboard(g, m);
+      break;
+    case 'calendar':
+      buildCalendar(g, m);
       break;
     default: {
       const height = PLANT_HEIGHT[item.kind];
@@ -244,6 +257,90 @@ export function buildItem(item: Item, m: MatFn, assets: Assets, look: RoomLook):
     }
   }
   return out;
+}
+
+/**
+ * Wool rug from its own weave textures (colour and height), with a bound edge. Shared
+ * materials, so every rug costs one draw of each.
+ */
+let rugMats: { top: THREE.MeshStandardMaterial; edge: THREE.MeshStandardMaterial } | null = null;
+function buildRug(g: THREE.Group): void {
+  if (!rugMats) {
+    const color = texture('rug-color.jpg');
+    const height = texture('rug-height.jpg', false);
+    for (const t of [color, height]) {
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.repeat.set(2.4, 1.7);
+    }
+    const edgeMap = texture('rug-edge.jpg');
+    edgeMap.wrapS = edgeMap.wrapT = THREE.RepeatWrapping;
+    edgeMap.repeat.set(12, 1);
+    rugMats = {
+      top: new THREE.MeshStandardMaterial({ map: color, bumpMap: height, bumpScale: 1.2, roughness: 1 }),
+      edge: new THREE.MeshStandardMaterial({ map: edgeMap, roughness: 0.95 }),
+    };
+    rugMats.top.userData.shared = rugMats.edge.userData.shared = true;
+  }
+  const w = 2.4;
+  const d = 1.7;
+  const rim = 0.035;
+  const top = new THREE.Mesh(new THREE.BoxGeometry(w - rim * 2, 0.012, d - rim * 2), rugMats.top);
+  top.position.y = 0.008;
+  top.receiveShadow = true;
+  g.add(top);
+  // The binding: four strips round the edge, a hair higher than the pile.
+  for (const [sw, sd, x, z] of [
+    [w, rim, 0, (d - rim) / 2],
+    [w, rim, 0, -(d - rim) / 2],
+    [rim, d - rim * 2, (w - rim) / 2, 0],
+    [rim, d - rim * 2, -(w - rim) / 2, 0],
+  ] as const) {
+    const strip = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.016, sd), rugMats.edge);
+    strip.position.set(x, 0.009, z);
+    strip.receiveShadow = true;
+    g.add(strip);
+  }
+}
+
+/** Until the model arrives: a low block sofa of the same size. */
+function placeholderSofa(m: MatFn): THREE.Group {
+  const g = new THREE.Group();
+  const fabric = m('wicker');
+  g.add(box(2.0, 0.42, 0.95, fabric, 0, 0.21, 0));
+  g.add(box(2.0, 0.4, 0.22, fabric, 0, 0.62, -0.36));
+  for (const side of [-1, 1]) g.add(box(0.2, 0.22, 0.95, fabric, side * 0.9, 0.53, 0));
+  return g;
+}
+
+/**
+ * The way in: a frame in the wall, a wooden leaf hinged on its left that swings into the
+ * room, and a mat outside on the ground. Local +z faces into the room.
+ */
+function buildEntrance(g: THREE.Group, m: MatFn): THREE.Object3D {
+  const w = ENTRANCE.width;
+  const h = ENTRANCE.head;
+  const frame = m('woodDark');
+  const jamb = 0.07;
+  for (const side of [-1, 1]) g.add(box(jamb, h + jamb, WALL_T + 0.04, frame, side * (w / 2 + jamb / 2), (h + jamb) / 2, 0));
+  g.add(box(w + jamb * 2, jamb, WALL_T + 0.04, frame, 0, h + jamb / 2, 0));
+
+  const hinge = new THREE.Group();
+  hinge.position.set(-w / 2, 0, WALL_T / 2 - 0.03);
+  const leafW = w - 0.02;
+  const leaf = box(leafW, h - 0.03, 0.045, m('wood'), leafW / 2, (h - 0.03) / 2 + 0.01, 0);
+  hinge.add(leaf);
+  // Two raised panels and a handle on each face.
+  for (const [y, ph] of [[0.62, 0.9], [1.58, 0.72]] as const) {
+    for (const face of [-1, 1]) hinge.add(box(leafW - 0.26, ph, 0.012, frame, leafW / 2, y, face * 0.028));
+  }
+  for (const face of [-1, 1]) hinge.add(box(0.04, 0.16, 0.04, m('metal'), leafW - 0.1, 1.02, face * 0.05));
+  g.add(hinge);
+
+  // Doormat on the ground outside (the ground is the slab's underside level).
+  const mat = box(w + 0.1, 0.012, 0.6, m('rug'), 0, -WALL_T + 0.006, -0.42);
+  mat.castShadow = false;
+  g.add(mat);
+  return hinge;
 }
 
 /** The desk alone (classic, or an Ogi once loaded), top at 0.77. */
@@ -295,7 +392,7 @@ function buildDesk(g: THREE.Group, item: Item, m: MatFn, assets: Assets, out: Bu
   out.lamp = lamp;
 
   if (item.decor === 'books') {
-    const books = [ROLES.research.color, ROLES.pm.color, ROLES.backend.color];
+    const books = [ROLES.research.color, ROLES.organizer.color, ROLES.dev.color];
     books.forEach((c, k) => g.add(box(0.32, 0.05, 0.24, accent(c), 0.85, 0.795 + k * 0.05, 0.22)));
   } else if (item.decor === 'plant') {
     g.add(cyl(0.05, 0.045, 0.1, accent(ROLES.design.color), 0.7, 0.82, -0.05, 12));
@@ -347,13 +444,26 @@ function buildShelf(g: THREE.Group, m: MatFn): void {
 /** The team's kanban: sticky notes in role colours. Hangs with its face toward local +z. */
 function buildWhiteboard(g: THREE.Group, m: MatFn): void {
   g.add(box(2.8, 1.3, 0.05, m('board'), 0, 1.6, 0));
+  const step = 2.3 / (ROLE_ORDER.length - 1);
   ROLE_ORDER.forEach((role, col) => {
     for (let k = 0; k < 2 + (col % 2); k++) {
-      const note = box(0.22, 0.22, 0.02, accent(ROLES[role].color), -1.1 + col * 0.55, 2.0 - k * 0.3, 0.03);
+      const note = box(0.22, 0.22, 0.02, accent(ROLES[role].color), -1.15 + col * step, 2.0 - k * 0.3, 0.03);
       note.castShadow = false;
       g.add(note);
     }
   });
+}
+
+/** A wall planner: a thin wooden frame round this month's page (see calendarBoard.ts). Clicking it opens the calendar. */
+function buildCalendar(g: THREE.Group, m: MatFn): void {
+  g.add(box(1.24, 0.98, 0.04, m('woodDark'), 0, 1.55, 0));
+  const page = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.16, 0.928),
+    finish('calendar:page', () => ({ map: calendarTexture(), roughness: 0.85 })),
+  );
+  page.position.set(0, 1.55, 0.022);
+  page.userData.calendar = true;
+  g.add(page);
 }
 
 // ---------------------------------------------------------------- windows

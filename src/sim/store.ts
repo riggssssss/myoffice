@@ -1,50 +1,17 @@
-import { DEFAULT_LOOK, SEED_LOOKS, type Look } from './look';
-import { createSeed, SCHEMA_VERSION, MINUTES_PER_DAY } from './seed';
-import type { FeedKind, RoleId, SimState, Speed, Task, TaskStatus, Worker } from './types';
+/**
+ * The browser's copy of the office. The local server owns the real state (src/sim/ops.ts runs
+ * there); this keeps the last snapshot it sent, tells the UI when it changed, and forwards
+ * every action to the server by name.
+ */
+import { DEFAULT_LOOK, type Look } from './look';
+import type { ChangeKind, CommandName, EventInput, TaskInput, WorkerInput } from './ops';
+import type { WorkerAi } from './settings';
+import type { ChatFile, SimState, Task, TaskStatus, Worker } from './types';
 
-const STORAGE_KEY = 'oficina-3d:state';
-const FEED_LIMIT = 250;
-
-/** 'tick' = numbers moved; 'change' = structure changed (status, assignment, selection…). */
-export type ChangeKind = 'tick' | 'change';
+export type { ChangeKind } from './ops';
 type Listener = (kind: ChangeKind) => void;
 
-const REMOVED_WORKER = 'tu';
-
-/** Old saves: v2 had a camera worker (removed in v3); before v4 workers had only skin + hair colours. */
-function migrate(s: SimState): void {
-  const gone = new Set(s.tasks.filter((t) => (t.role as string) === 'lead').map((t) => t.id));
-  s.tasks = s.tasks.filter((t) => !gone.has(t.id));
-  s.workers = s.workers.filter((w) => w.id !== REMOVED_WORKER);
-  for (const t of s.tasks) if (t.assigneeId === REMOVED_WORKER) Object.assign(t, { assigneeId: null, status: 'backlog' });
-  for (const w of s.workers) if (w.pairWith === REMOVED_WORKER) w.pairWith = null;
-  s.feed = s.feed.filter((e) => e.workerId !== REMOVED_WORKER && !(e.taskId && gone.has(e.taskId)));
-  for (const w of s.workers) {
-    const legacy = w as Worker & { skin?: string; hair?: string };
-    if (!w.look) w.look = { ...(SEED_LOOKS[w.id] ?? DEFAULT_LOOK) };
-    // v5: Totoro became the default figure.
-    if (!w.look.model) w.look.model = 'totoro';
-    delete legacy.skin;
-    delete legacy.hair;
-  }
-  s.version = SCHEMA_VERSION;
-}
-
-function load(): SimState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as SimState;
-      if (parsed.version < SCHEMA_VERSION && Array.isArray(parsed.workers)) migrate(parsed);
-      if (parsed.version === SCHEMA_VERSION && Array.isArray(parsed.workers)) return parsed;
-    }
-  } catch {
-    /* storage unavailable or corrupt: start fresh */
-  }
-  return createSeed();
-}
-
-let state: SimState = load();
+let state: SimState;
 let selectedId: string | null = null;
 const listeners = new Set<Listener>();
 let pending: ChangeKind | null = null;
@@ -75,14 +42,6 @@ export function flush(): void {
   for (const fn of listeners) fn(kind);
 }
 
-export function save(): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    /* private mode / quota: simulation keeps running in memory */
-  }
-}
-
 // ---------- lookups ----------
 
 export const worker = (id: string | null): Worker | undefined =>
@@ -91,29 +50,144 @@ export const worker = (id: string | null): Worker | undefined =>
 export const task = (id: string | null): Task | undefined =>
   id ? state.tasks.find((t) => t.id === id) : undefined;
 
-export const dayOf = (clock: number) => Math.floor(clock / MINUTES_PER_DAY);
+// ---------- connection ----------
 
-export function formatClock(clock: number): string {
-  const m = clock % MINUTES_PER_DAY;
-  const hh = String(Math.floor(m / 60)).padStart(2, '0');
-  const mm = String(Math.floor(m % 60)).padStart(2, '0');
-  return `${hh}:${mm}`;
+let socket: WebSocket | null = null;
+let token = '';
+let onStatus: (online: boolean) => void = () => {};
+let onRefused: (text: string) => void = () => {};
+
+/** The server said no to something (e.g. a loop in the org chart): show why. */
+export function onRefusal(fn: (text: string) => void): void {
+  onRefused = fn;
 }
 
-// ---------- feed ----------
-
-
-export function log(
-  kind: FeedKind,
-  text: string,
-  workerId: string | null = null,
-  taskId: string | null = null,
-): void {
-  state.feed.unshift({ id: state.nextId++, t: state.clock, kind, text, workerId, taskId });
-  if (state.feed.length > FEED_LIMIT) state.feed.length = FEED_LIMIT;
+/** Called with false while the local server is unreachable, true once it's back. */
+export function onConnection(fn: (online: boolean) => void): void {
+  onStatus = fn;
 }
 
-// ---------- actions ----------
+/**
+ * The scene rebuilds a figure when its look object changes identity: keep the old object
+ * whenever the snapshot's look is the same.
+ */
+function adopt(next: SimState): void {
+  if (state) {
+    for (const w of next.workers) {
+      const prev = state.workers.find((o) => o.id === w.id);
+      if (prev && JSON.stringify(prev.look) === JSON.stringify(w.look)) w.look = prev.look;
+    }
+  }
+  state = next;
+  if (selectedId && !worker(selectedId)) selectedId = null;
+}
+
+async function session(): Promise<string> {
+  const res = await fetch('/api/session', { credentials: 'same-origin' });
+  if (!res.ok) throw new Error(`session ${res.status}`);
+  token = ((await res.json()) as { token: string }).token;
+  return token;
+}
+
+/** A JSON call to the local server, with this session's token. */
+export async function api<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'DELETE' = 'GET', body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: { 'x-oficina-token': token, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  // The server's reason, when it gives one in Spanish for the panel to show.
+  if (!res.ok) throw new Error((await res.json().then((b: { error?: string }) => b.error).catch(() => null)) ?? `${method} ${path}: ${res.status}`);
+  return (await res.json()) as T;
+}
+
+/** Sends a file for the chat; the server keeps it and says what it is. */
+export async function upload(file: File, onProgress?: (part: number) => void): Promise<ChatFile> {
+  // XHR rather than fetch: it reports how far the upload has gone.
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', '/api/files');
+    x.setRequestHeader('x-oficina-token', token);
+    x.setRequestHeader('x-file-name', encodeURIComponent(file.name));
+    x.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
+    x.onload = () => {
+      let body: (ChatFile & { error?: string }) | null = null;
+      try {
+        body = JSON.parse(x.responseText);
+      } catch {
+        /* reported below */
+      }
+      if (x.status === 200 && body) resolve(body);
+      else reject(new Error(body?.error ?? 'No se pudo subir'));
+    };
+    x.onerror = () => reject(new Error('No se pudo subir: ¿está en marcha el servidor local?'));
+    x.send(file);
+  });
+}
+
+/** A chat file for the page (fetched with the session's token, never put in an address). */
+const blobs = new Map<string, Promise<string>>();
+export function fileUrl(id: string): Promise<string> {
+  let p = blobs.get(id);
+  if (!p) {
+    p = fetch(`/api/files/${id}`, { headers: { 'x-oficina-token': token } }).then(async (r) => {
+      if (!r.ok) throw new Error(String(r.status));
+      return URL.createObjectURL(await r.blob());
+    });
+    p.catch(() => blobs.delete(id));
+    blobs.set(id, p);
+  }
+  return p;
+}
+
+/** Resolves with the first snapshot; reconnects on its own after that. */
+export function connect(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let first = true;
+    let retry = 500;
+    const open = async () => {
+      let token: string;
+      try {
+        token = await session();
+      } catch (e) {
+        if (first) return reject(e);
+        setTimeout(open, (retry = Math.min(retry * 2, 8000)));
+        return;
+      }
+      const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data as string) as
+          | { type: 'state'; kind: ChangeKind; state: SimState }
+          | { type: 'refused'; text: string }
+          | { type: 'project' };
+        if (msg.type === 'refused') return onRefused(msg.text);
+        if (msg.type === 'project') return void document.dispatchEvent(new Event('project-changed'));
+        if (msg.type !== 'state') return;
+        adopt(msg.state);
+        notify(msg.kind);
+        retry = 500;
+        if (first) {
+          first = false;
+          resolve();
+        } else onStatus(true);
+      };
+      ws.onclose = () => {
+        if (socket === ws) socket = null;
+        if (first) return reject(new Error('closed before the first snapshot'));
+        onStatus(false);
+        setTimeout(open, (retry = Math.min(retry * 2, 8000)));
+      };
+      socket = ws;
+    };
+    void open();
+  });
+}
+
+function send(name: CommandName, ...args: unknown[]): void {
+  socket?.send(JSON.stringify({ type: 'cmd', name, args }));
+}
+
+// ---------- actions (run on the server) ----------
 
 export function select(id: string | null): void {
   if (selectedId === id) return;
@@ -121,237 +195,58 @@ export function select(id: string | null): void {
   notify('change');
 }
 
-export function setSpeed(speed: Speed): void {
-  state.speed = speed;
+export const setWorking = (on: boolean) => send('setWorking', on);
+export const setOfficeInfo = (agency: string, project: string) => send('setOfficeInfo', agency, project);
+export const addWorker = (input: WorkerInput) => send('addWorker', input);
+export const updateWorker = (id: string, input: WorkerInput) => send('updateWorker', id, input);
+export const setBoss = (id: string, bossId: string) => send('setBoss', id, bossId);
+export const callSkeptic = () => send('callSkeptic');
+export const setWorkerAi = (id: string, patch: Partial<WorkerAi>) => send('setWorkerAi', id, patch);
+export const removeWorker = (id: string) => send('removeWorker', id);
+export const setEnabled = (workerId: string, on: boolean) => send('setEnabled', workerId, on);
+export const assignTask = (taskId: string, workerId: string | null) => send('assignTask', taskId, workerId);
+export const createTask = (input: TaskInput) => send('createTask', input);
+export const requestWork = (text: string, via: string | null = null) => send('requestWork', text, via);
+export const answerQuestion = (id: string, text: string) => send('answerQuestion', id, text);
+export const clearConversations = () => send('clearConversations');
+export const callMeeting = () => send('callMeeting');
+export const ownerSay = (text: string) => send('ownerSay', text);
+export const ownerChat = (workerId: string, text: string, files: string[] = []) => send('ownerChat', workerId, text, files);
+export const resetChat = (workerId: string) => send('resetChat', workerId);
+export const placeTask = (taskId: string, workerId: string | null, order: string[]) => send('placeTask', taskId, workerId, order);
+export const deleteChatArchive = (workerId: string, at: number) => send('deleteChatArchive', workerId, at);
+export const endMeeting = () => send('endMeeting');
+export const updateTask = (id: string, patch: TaskInput & { status: TaskStatus }) => send('updateTask', id, patch);
+export const deleteTask = (id: string) => send('deleteTask', id);
+export const setStatus = (id: string, status: TaskStatus) => send('setStatus', id, status);
+export const setPair = (workerId: string, partnerId: string | null) => send('setPair', workerId, partnerId);
+export const setDesk = (workerId: string, slot: number) => send('setDesk', workerId, slot);
+export const reset = () => send('reset');
+export const addEvent = (input: EventInput) => send('addEvent', input);
+export const updateEvent = (id: string, input: EventInput) => send('updateEvent', id, input);
+export const deleteEvent = (id: string) => send('deleteEvent', id);
+/** Applied here at once too, so a seen message stops popping up straight away. */
+export function readMessages(ids: string[] | 'all'): void {
+  for (const m of state.inbox) if (!m.read && (ids === 'all' || ids.includes(m.id))) m.read = true;
   notify('change');
-  save();
+  send('readMessages', ids);
 }
-
-/** Put a worker's current task back in the backlog (keeps its progress). */
-function release(w: Worker): void {
-  const current = task(w.taskId);
-  if (current && (current.status === 'doing' || current.status === 'blocked')) {
-    current.status = 'backlog';
-    current.assigneeId = null;
-    current.blockedUntil = null;
-    current.blockReason = null;
-  }
-  w.taskId = null;
-}
-
-export function startTask(w: Worker, t: Task, quiet = false): void {
-  if (w.taskId === t.id) return;
-  release(w);
-  const prev = worker(t.assigneeId);
-  if (prev && prev.taskId === t.id) prev.taskId = null;
-  t.assigneeId = w.id;
-  t.status = t.blockedUntil ? 'blocked' : 'doing';
-  w.taskId = t.id;
-  w.idleSince = null;
-  if (!quiet) log('start', `${w.name} empieza «${t.title}»`, w.id, t.id);
-}
-
-export function assignTask(taskId: string, workerId: string | null): void {
-  const t = task(taskId);
-  if (!t) return;
-  if (!workerId) {
-    const prev = worker(t.assigneeId);
-    if (prev && prev.taskId === t.id) release(prev);
-    else t.assigneeId = null;
-    if (t.status === 'doing' || t.status === 'blocked') t.status = 'backlog';
-  } else {
-    const w = worker(workerId);
-    if (!w) return;
-    if (t.status === 'done' || t.status === 'review') {
-      t.status = 'backlog';
-      t.doneAt = null;
-      t.reviewProgress = 0;
-      if (t.progress >= 100) t.progress = 90;
-    }
-    startTask(w, t);
-  }
+export function closeMessage(id: string): void {
+  const m = state.inbox.find((x) => x.id === id);
+  if (m) Object.assign(m, { closed: true, read: true });
   notify('change');
-  save();
+  send('closeMessage', id);
 }
+/** Ask the head who your project needs (`force`: even if nothing changed since last time). */
+export const askHireIdeas = (force = false) => send('askHireIdeas', force);
 
-export function createTask(input: {
-  title: string;
-  role: RoleId;
-  estimate: number;
-  assigneeId: string | null;
-}): Task {
-  const t: Task = {
-    id: `t${state.nextId++}`,
-    title: input.title,
-    role: input.role,
-    assigneeId: null,
-    status: 'backlog',
-    progress: 0,
-    reviewProgress: 0,
-    estimate: input.estimate,
-    createdAt: state.clock,
-    doneAt: null,
-    blockedUntil: null,
-    blockReason: null,
-  };
-  state.tasks.push(t);
-  log('create', `Nueva tarea «${t.title}»`, null, t.id);
-  if (input.assigneeId) assignTask(t.id, input.assigneeId);
-  notify('change');
-  save();
-  return t;
-}
-
-export function updateTask(
-  id: string,
-  patch: { title: string; role: RoleId; estimate: number; status: TaskStatus; assigneeId: string | null },
-): void {
-  const t = task(id);
-  if (!t) return;
-  t.title = patch.title;
-  t.role = patch.role;
-  t.estimate = patch.estimate;
-  if (patch.assigneeId !== t.assigneeId) assignTask(id, patch.assigneeId);
-  if (patch.status !== t.status) setStatus(id, patch.status);
-  log('edit', `Tarea «${t.title}» actualizada`, null, t.id);
-  notify('change');
-  save();
-}
-
-export function setStatus(id: string, status: TaskStatus): void {
-  const t = task(id);
-  if (!t || t.status === status) return;
-  const owner = worker(t.assigneeId);
-  switch (status) {
-    case 'blocked':
-      block(t, 'Bloqueada manualmente', 120);
-      break;
-    case 'doing':
-      if (t.status === 'blocked') unblock(t);
-      else if (owner) startTask(owner, t);
-      else t.status = 'backlog';
-      break;
-    case 'backlog':
-      if (owner && owner.taskId === t.id) release(owner);
-      t.status = 'backlog';
-      t.assigneeId = null;
-      break;
-    case 'review':
-      sendToReview(t);
-      break;
-    case 'done':
-      complete(t);
-      break;
-  }
-  notify('change');
-  save();
-}
-
-export function block(t: Task, reason: string, minutes: number): void {
-  t.status = 'blocked';
-  t.blockedUntil = state.clock + minutes;
-  t.blockReason = reason;
-  const owner = worker(t.assigneeId);
-  log('blocked', `${owner ? `${owner.name} tiene un bloqueo` : 'Bloqueo'} en «${t.title}»: ${reason.toLowerCase()}`, owner?.id ?? null, t.id);
-}
-
-export function unblock(t: Task): void {
-  t.status = t.assigneeId ? 'doing' : 'backlog';
-  t.blockedUntil = null;
-  t.blockReason = null;
-  const owner = worker(t.assigneeId);
-  log('unblocked', `«${t.title}» desbloqueada`, owner?.id ?? null, t.id);
-  notify('change');
-  save();
-}
-
-function freeOwner(t: Task): void {
-  const owner = worker(t.assigneeId);
-  if (owner && owner.taskId === t.id) {
-    owner.taskId = null;
-    owner.idleSince = state.clock;
-    if (owner.pairWith) {
-      log('unpair', `${owner.name} termina y vuelve a su mesa`, owner.id, null);
-      owner.pairWith = null;
-    }
-  }
-}
-
-export function sendToReview(t: Task): void {
-  t.progress = 100;
-  t.status = 'review';
-  t.reviewProgress = 0;
-  t.blockedUntil = null;
-  t.blockReason = null;
-  freeOwner(t);
-  const owner = worker(t.assigneeId);
-  log('review', `${owner?.name ?? 'Alguien'} envía «${t.title}» a revisión`, owner?.id ?? null, t.id);
-}
-
-export function complete(t: Task, text = `«${t.title}» terminada`, by: string | null = t.assigneeId): void {
-  t.progress = 100;
-  t.reviewProgress = 100;
-  t.status = 'done';
-  t.doneAt = state.clock;
-  t.blockedUntil = null;
-  t.blockReason = null;
-  freeOwner(t);
-  log('done', text, by, t.id);
-}
-
-export function setPair(workerId: string, partnerId: string | null): void {
-  const w = worker(workerId);
-  if (!w || w.pairWith === partnerId || partnerId === workerId) return;
-  // Nobody sits at a desk whose owner is away pairing.
-  if (partnerId) {
-    const partner = worker(partnerId);
-    if (!partner) return;
-    if (partner.pairWith === w.id) partner.pairWith = null;
-    for (const other of state.workers) if (other.pairWith === w.id) other.pairWith = null;
-    w.pairWith = partnerId;
-    log('pair', `${w.name} se sienta con ${partner.name}`, w.id, w.taskId);
-  } else {
-    log('unpair', `${w.name} vuelve a su mesa`, w.id, null);
-    w.pairWith = null;
-  }
-  notify('change');
-  save();
-}
-
-export function sendCoffee(workerId: string, minutes = 20): void {
-  const w = worker(workerId);
-  if (!w || w.coffeeUntil) return;
-  w.coffeeUntil = state.clock + minutes;
-  log('coffee', `${w.name} se va a por un café`, w.id, null);
-  notify('change');
-}
-
-/** Seat a worker at another desk; whoever sat there takes the worker's old desk. */
-export function setDesk(workerId: string, slot: number): void {
-  const w = worker(workerId);
-  if (!w || w.desk === slot) return;
-  const other = state.workers.find((o) => o.desk === slot);
-  if (other) other.desk = w.desk;
-  w.desk = slot;
-  notify('change');
-  save();
-}
-
-/** Replaces the look object, so the scene can spot the change by identity. */
+/** Applied here at once too: the appearance editor previews from local state. */
 export function updateLook(workerId: string, patch: Partial<Look>): void {
   const w = worker(workerId);
   if (!w) return;
-  const next = { ...w.look, ...patch };
-  // A hood only exists on a hoodie.
+  const next = { ...DEFAULT_LOOK, ...w.look, ...patch };
   if (next.top !== 'hoodie' && next.headwear === 'hood') next.headwear = 'none';
   w.look = next;
   notify('change');
-  save();
-}
-
-export function reset(): void {
-  state = createSeed();
-  selectedId = null;
-  notify('change');
-  save();
+  send('updateLook', workerId, patch);
 }

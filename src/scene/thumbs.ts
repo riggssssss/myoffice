@@ -10,11 +10,14 @@ import {
   type ChairPack,
   type ChairStyle,
   type DeskModel,
+  type BenchModel,
   type ItemKind,
+  type LampModel,
   type WindowModel,
 } from '../sim/layout';
 import { buildItem, buildWindow, deskObject, placeChair, type Assets, type MatFn, type RoomLook } from './furniture';
 import { LIGHT, Materials } from './palette';
+import { benchObject, lampObject, loadStreet, streetReady } from './street';
 
 /**
  * Pictures of the real models for the editor's pickers. The panel asks for one by spec; the
@@ -24,7 +27,9 @@ export type ThumbSpec =
   | { type: 'item'; kind: ItemKind }
   | { type: 'desk'; model: DeskModel }
   | { type: 'chair'; pack: ChairPack; model: ChairModel }
-  | { type: 'window'; model: WindowModel };
+  | { type: 'window'; model: WindowModel }
+  | { type: 'bench'; model: BenchModel }
+  | { type: 'lamp'; model: LampModel };
 
 const cache = new Map<string, string>();
 const queue = new Map<string, ThumbSpec>();
@@ -66,6 +71,9 @@ function keyOf(spec: ThumbSpec): string {
       return `${version}|chair|${c(chairFor(spec.pack, spec.model))}`;
     case 'window':
       return `${version}|window|${spec.model}|${l.windows.frame}`;
+    case 'bench':
+    case 'lamp':
+      return `${version}|${spec.type}|${spec.model}`;
   }
 }
 
@@ -120,12 +128,19 @@ export class ThumbRenderer {
       case 'window':
         buildWindow(g, a, { ...windowStyle(), model: spec.model });
         return g;
+      case 'bench':
+        g.add(benchObject(spec.model)!);
+        return g;
+      case 'lamp':
+        g.add(lampObject(spec.model)!.obj);
+        return g;
     }
   }
 
   /** Render up to `max` queued pictures. Returns whether any were made. */
   process(max = 2): boolean {
     if (!queue.size) return false;
+    clearTimeout(this.idle);
     if (!this.renderer) {
       this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
       this.renderer.setPixelRatio(1);
@@ -133,6 +148,11 @@ export class ThumbRenderer {
     }
     let made = 0;
     for (const [key, spec] of queue) {
+      // The garden's models load on their own: those pictures wait until they're in.
+      if ((spec.type === 'bench' || spec.type === 'lamp') && !streetReady()) {
+        void loadStreet();
+        continue;
+      }
       queue.delete(key);
       if (cache.has(key) || !key.startsWith(`${version}|`)) continue;
       const obj = this.build(spec);
@@ -155,6 +175,19 @@ export class ThumbRenderer {
       if (++made >= max) break;
     }
     if (made) for (const fn of listeners) fn();
+    // Nothing left to draw for a while: give the browser its graphics context back. Two live
+    // contexts hold every shared texture twice, and Safari drops contexts when memory runs short.
+    clearTimeout(this.idle);
+    if (!queue.size) this.idle = window.setTimeout(() => this.release(), 8000);
     return made > 0;
+  }
+
+  private idle = 0;
+
+  private release(): void {
+    if (!this.renderer || queue.size) return;
+    this.renderer.dispose();
+    this.renderer.forceContextLoss();
+    this.renderer = null;
   }
 }

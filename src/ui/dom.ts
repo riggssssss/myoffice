@@ -1,5 +1,5 @@
 import { ROLES } from '../sim/seed';
-import { dayOf, formatClock } from '../sim/store';
+import { dayKey, formatClock } from '../sim/time';
 import type { RoleId } from '../sim/types';
 
 export const esc = (s: string) =>
@@ -10,7 +10,15 @@ export const pct = (n: number) => `${Math.round(Math.min(100, Math.max(0, n)))}%
 /** Progress fills scale instead of resizing, so updates never trigger layout. */
 export const fill = (n: number) => `scaleX(${(Math.min(100, Math.max(0, n)) / 100).toFixed(4)})`;
 
-export const stamp = (clock: number) => `Día ${dayOf(clock)} · ${formatClock(clock)}`;
+const shortDate = new Intl.DateTimeFormat('es', { day: 'numeric', month: 'short' });
+
+/** When something happened: just the time today, "ayer" or the date before that. */
+export function stamp(ms: number): string {
+  const day = dayKey(ms);
+  if (day === dayKey(Date.now())) return formatClock(ms);
+  if (day === dayKey(Date.now() - 86_400_000)) return `ayer · ${formatClock(ms)}`;
+  return `${shortDate.format(ms)} · ${formatClock(ms)}`;
+}
 
 export const roleDot = (role: RoleId) => `<span class="dot" style="--role:${ROLES[role].color}"></span>`;
 
@@ -39,6 +47,11 @@ export class Region {
         this.pressing = false;
         if (this.dirty) this.render();
       }, 0);
+    });
+    // A drag ends without a pointerup.
+    el.addEventListener('dragend', () => {
+      this.pressing = false;
+      if (this.dirty) setTimeout(() => this.render(), 0);
     });
     el.addEventListener('focusout', () => setTimeout(() => this.dirty && this.render(), 0));
   }

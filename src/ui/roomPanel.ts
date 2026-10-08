@@ -1,4 +1,5 @@
 import {
+  BENCHES,
   CHAIR_FABRICS,
   CHAIR_FRAMES,
   CHAIR_MODELS,
@@ -9,8 +10,12 @@ import {
   DESK_TOPS,
   deskStyle,
   FLOORS,
+  GROUNDS,
+  outdoorStyle,
   KIND_ORDER,
+  LAMPS,
   KINDS,
+  deskBySlot,
   layoutItem,
   layoutItems,
   layoutRoom,
@@ -27,12 +32,14 @@ import {
   type DeskDecor,
   type DeskStyle,
   type FloorKind,
+  type OutdoorStyle,
   type ItemKind,
   type P,
   type Room,
   type WallKind,
   type WindowStyle,
 } from '../sim/layout';
+import { deskOwners } from '../sim/ops';
 import { getState, setDesk } from '../sim/store';
 import { floorThumb, WALL_PAINT, wallThumb } from '../scene/floors';
 import { thumb, type ThumbSpec } from '../scene/thumbs';
@@ -41,6 +48,7 @@ import { icon } from './icons';
 import {
   addKind,
   canUndo,
+  placeDesk,
   deskOwner,
   dropRoom,
   duplicate,
@@ -60,6 +68,7 @@ import {
   stepRoom,
   styleChairs,
   styleDesks,
+  styleOutdoor,
   styleWindows,
   wallFinish,
 } from './roomState';
@@ -94,19 +103,24 @@ function itemInspector(): string {
   const info = KINDS[item.kind];
   const owner = deskOwner(item);
   const blocker = removeBlocker(item);
-  const workers = getState().workers;
+  // Desks can swap between the people you hired; the head's desk stays theirs.
+  const workers = deskOwners(getState().workers).filter((w) => w.role !== 'director');
   const deg = Math.round((((item.rot * 180) / Math.PI) % 360 + 360) % 360);
 
   const desk =
     item.kind === 'desk'
       ? `
-      <label class="field room-field">
-        <span>Puesto de</span>
-        <select data-owner data-key="owner">
-          ${owner ? '' : '<option value="" selected>Nadie (libre)</option>'}
-          ${workers.map((w) => `<option value="${w.id}" ${w.id === owner?.id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}
-        </select>
-      </label>
+      ${
+        owner?.role === 'director'
+          ? `<p class="section-note">Mesa de ${esc(owner.name)}, en su despacho.</p>`
+          : `<label class="field room-field">
+              <span>Puesto de</span>
+              <select data-owner data-key="owner">
+                ${owner ? '' : '<option value="" selected>Nadie (libre)</option>'}
+                ${workers.map((w) => `<option value="${w.id}" ${w.id === owner?.id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}
+              </select>
+            </label>`
+      }
       <fieldset class="room-field">
         <legend>Sobre la mesa</legend>
         <div class="chips" role="group">
@@ -137,7 +151,7 @@ function itemInspector(): string {
       ${turn}
       ${desk}
       <div class="actions">
-        ${info.unique ? '' : `<button class="btn" type="button" data-duplicate data-key="dup">${icon.copy(15)}Duplicar</button>`}
+        ${info.unique || info.perWorker ? '' : `<button class="btn" type="button" data-duplicate data-key="dup">${icon.copy(15)}Duplicar</button>`}
         <button class="btn btn-ghost room-remove" type="button" data-remove data-key="remove" ${blocker ? `aria-disabled="true" title="${esc(blocker)}"` : 'title="Quitar (Supr)"'}>${icon.trash(15)}Quitar</button>
       </div>
     </div>`;
@@ -259,7 +273,9 @@ function catalog(): string {
             const unique = KINDS[k].unique;
             const attrs = unique
               ? `aria-disabled="true" title="Solo puede haber una" data-key="add-${k}"`
-              : `data-add="${k}" data-key="add-${k}" title="Añadir ${KINDS[k].label.toLowerCase()}"`;
+              : KINDS[k].perWorker
+                ? `aria-disabled="true" title="Aparece al añadir un agente al equipo" data-key="add-${k}"`
+                : `data-add="${k}" data-key="add-${k}" title="Añadir ${KINDS[k].label.toLowerCase()}"`;
             return card({ type: 'item', kind: k }, KINDS[k].label, attrs, `<span class="model-count num" aria-label="${n} en la oficina">${unique ? 'Única' : n}</span>`);
           })
           .join('')}
@@ -342,14 +358,64 @@ function windowLook(): string {
     </section>`;
 }
 
+/** Round the building: the ground it stands on and the sky over it. */
+function outdoorLook(): string {
+  const o = outdoorStyle();
+  const base = import.meta.env.BASE_URL;
+  return `
+    <section class="section" id="room-outdoor" aria-labelledby="room-outdoor-title">
+      <h3 class="section-title" id="room-outdoor-title">Exterior</h3>
+      <fieldset class="room-field">
+        <legend>Suelo de fuera · ${esc(GROUNDS.find((g) => g.id === o.ground)!.label)}</legend>
+        <div class="floor-grid" role="group" aria-label="Suelo de fuera">
+          ${GROUNDS.map(
+            (g) =>
+              `<button type="button" class="floor-opt${g.id === 'none' ? ' floor-plain' : ''}" data-outdoor="ground" data-value="${g.id}" data-key="ground-${g.id}" aria-pressed="${g.id === o.ground}" aria-label="${esc(g.label)}" title="${esc(`${g.label}: ${g.note}`)}" ${g.id === 'none' ? '' : `style="background-image:url(${base}textures/ground/${g.id}/color.jpg)"`}></button>`,
+          ).join('')}
+        </div>
+      </fieldset>
+      ${
+        o.ground === 'grass'
+          ? `<fieldset class="room-field">
+        <legend>Bancos · ${esc(BENCHES.find((b) => b.id === o.bench)!.label)}</legend>
+        <div class="model-grid" role="group" aria-label="Modelo de banco">
+          ${BENCHES.map((b) => card({ type: 'bench', model: b.id }, b.label, `data-outdoor="bench" data-value="${b.id}" data-key="bench-${b.id}" aria-pressed="${o.bench === b.id}" title="${esc(b.note)}"`)).join('')}
+        </div>
+      </fieldset>
+      <fieldset class="room-field">
+        <legend>Farolas · ${esc(LAMPS.find((l) => l.id === o.lamp)!.label)}</legend>
+        <div class="model-grid" role="group" aria-label="Modelo de farola">
+          ${LAMPS.map((l) => card({ type: 'lamp', model: l.id }, l.label, `data-outdoor="lamp" data-value="${l.id}" data-key="lamp-${l.id}" aria-pressed="${o.lamp === l.id}" title="${esc(l.note)}"`)).join('')}
+        </div>
+      </fieldset>`
+          : ''
+      }
+    </section>`;
+}
+
+/** New agents' desks, waiting for you to put them somewhere. */
+function pendingDesks(): string {
+  const waiting = deskOwners(getState().workers).filter((w) => !deskBySlot(w.desk));
+  if (!waiting.length) return '';
+  return `
+    <section class="section room-pending" aria-label="Mesas por colocar">
+      <h3 class="section-title">Mesas por colocar <span class="count">${waiting.length}</span></h3>
+      <p class="section-note">Va a su sitio por defecto en la zona de trabajo (dos columnas de tres); luego puedes arrastrarla. Hasta entonces, su dueño espera en recepción.</p>
+      <div class="room-pending-list">
+        ${waiting.map((w) => `<button class="btn" type="button" data-place-desk="${w.desk}" data-key="place-${w.id}">${icon.plus(15)}Mesa de ${esc(w.name)}</button>`).join('')}
+      </div>
+    </section>`;
+}
+
 export function renderRoom(): string {
   const msg = editMessage();
   return `
     <div class="room">
       <header class="room-head">
         <h2>Editar oficina</h2>
-        <p class="section-note">La simulación queda en pausa mientras amueblas. Cada persona sigue a su puesto allá donde lo pongas. Gira la vista a tu gusto: las paredes que tapan se apartan.</p>
+        <p class="section-note">Cada persona sigue a su puesto allá donde lo pongas. Gira la vista a tu gusto: las paredes que tapan se apartan.</p>
       </header>
+      ${pendingDesks()}
       <section class="section room-inspect" aria-label="Selección">
         ${inspector()}
         <p class="room-msg ${msg ? 'is-shown' : ''}" role="status" aria-live="polite">${msg ? `${icon.alert(14)}${esc(msg)}` : ''}</p>
@@ -362,6 +428,7 @@ export function renderRoom(): string {
       ${deskLook()}
       ${chairPicker()}
       ${windowLook()}
+      ${outdoorLook()}
       <p class="room-keys section-note"><kbd>R</kbd> gira 90° · <kbd>Q</kbd>/<kbd>E</kbd> giran 15° · flechas mueven · <kbd>Alt</kbd> al arrastrar quita la rejilla · <kbd>Supr</kbd> quita · <kbd>⌘Z</kbd> deshace</p>
     </div>`;
 }
@@ -380,6 +447,8 @@ export function bindRoom(el: HTMLElement, near: () => P): void {
     const room = editRoom();
     const add = t.closest<HTMLElement>('[data-add]');
     if (add) return addKind(add.dataset.add as ItemKind, near());
+    const desk = t.closest<HTMLElement>('[data-place-desk]');
+    if (desk) return placeDesk(Number(desk.dataset.placeDesk), near());
     const pick = t.closest<HTMLElement>('[data-pick-room]');
     if (pick) return selectRoom(pick.dataset.pickRoom!);
     const ch = t.closest<HTMLElement>('[data-chair]');
@@ -388,6 +457,8 @@ export function bindRoom(el: HTMLElement, near: () => P): void {
     if (ds) return styleDesks({ [ds.dataset.deskStyle as keyof DeskStyle]: ds.dataset.value } as Partial<DeskStyle>);
     const ws = t.closest<HTMLElement>('[data-win-style]');
     if (ws) return styleWindows({ [ws.dataset.winStyle as keyof WindowStyle]: ws.dataset.value } as Partial<WindowStyle>);
+    const od = t.closest<HTMLElement>('[data-outdoor]');
+    if (od) return styleOutdoor({ [od.dataset.outdoor as 'ground' | 'bench' | 'lamp']: od.dataset.value } as Partial<OutdoorStyle>);
     const jump = t.closest<HTMLElement>('[data-jump]');
     if (jump) return document.getElementById(jump.dataset.jump!)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     if (room) {
