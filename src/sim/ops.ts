@@ -257,6 +257,7 @@ export function ensureRequired(): void {
   state.events ??= [];
   state.inbox ??= [];
   state.hireIdeas ??= { status: 'idle', items: [], basis: '', at: 0, by: null, note: '' };
+  state.items ??= [];
   // Cut off by a restart: ask again.
   if (state.hireIdeas.status === 'thinking') state.hireIdeas.status = 'asked';
   for (const t of state.tasks) t.notes ??= [];
@@ -900,6 +901,46 @@ export function closeMessage(id: string): void {
   notify('change');
 }
 
+// ---------- what they hand you ----------
+
+const yourItem = (id: string) => state.items.find((i) => i.id === id && i.holder === 'owner');
+
+/** You've looked at them: they stop counting as new. */
+export function seeItems(ids: string[] | 'all'): void {
+  for (const i of state.items) if (i.unseen && (ids === 'all' || ids.includes(i.id))) i.unseen = false;
+  notify('change');
+}
+
+export function starItem(id: string, on: boolean): void {
+  const i = yourItem(id);
+  if (!i) return;
+  i.starred = on;
+  notify('change');
+}
+
+/** Put away (or back among your deliveries). */
+export function archiveItem(id: string, on: boolean): void {
+  const i = yourItem(id);
+  if (!i || (on ? i.status !== 'delivered' : i.status !== 'archived')) return;
+  i.status = on ? 'archived' : 'delivered';
+  i.unseen = false;
+  notify('change');
+}
+
+/** Not quite: back to whoever made it, with what to change, as a task in their queue. */
+export function askItemChanges(id: string, text: string): string | null {
+  const i = yourItem(id);
+  const maker = worker(i?.by ?? null);
+  if (!i) return 'Esa entrega ya no está';
+  if (!maker) return 'Quien lo hizo ya no está en el equipo';
+  Object.assign(i, { status: 'back', holder: maker.id, unseen: false });
+  i.trail.push({ at: Date.now(), by: 'owner', act: 'asked', note: text });
+  createTask({ title: `Rehacer «${i.title.slice(0, 90)}»`, role: maker.role, estimate: 1, assigneeId: maker.id });
+  log('edit', `Pides cambios a ${maker.name} en «${i.title}»`, maker.id, null);
+  notify('change');
+  return null;
+}
+
 // ---------- calendar ----------
 
 export interface EventInput {
@@ -1121,6 +1162,11 @@ export const COMMANDS = {
   setStatus: (id: unknown, status: unknown) => str(id, 64) && STATUSES.has(status as TaskStatus) && setStatus(id, status as TaskStatus),
   readMessages: (ids: unknown) => (ids === 'all' || (Array.isArray(ids) && ids.length <= 120 && ids.every((x) => str(x, 24)))) && readMessages(ids as string[] | 'all'),
   closeMessage: (id: unknown) => str(id, 24) && closeMessage(id),
+  seeItems: (ids: unknown) => (ids === 'all' || (Array.isArray(ids) && ids.length <= 300 && ids.every((x) => str(x, 24)))) && seeItems(ids as string[] | 'all'),
+  starItem: (id: unknown, on: unknown) => str(id, 24) && typeof on === 'boolean' && starItem(id, on),
+  archiveItem: (id: unknown, on: unknown) => str(id, 24) && typeof on === 'boolean' && archiveItem(id, on),
+  askItemChanges: (id: unknown, text: unknown) =>
+    str(id, 24) && typeof text === 'string' && text.trim().length >= 2 && text.length <= 2000 ? askItemChanges(id, text.trim()) : null,
   askHireIdeas: (force: unknown) => askHireIdeas(force === true),
   addEvent: (input: unknown) => isEventInput(input) && void addEvent(input),
   updateEvent: (id: unknown, input: unknown) => str(id, 24) && isEventInput(input) && updateEvent(id, input),

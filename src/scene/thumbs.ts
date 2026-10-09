@@ -61,7 +61,7 @@ function keyOf(spec: ThumbSpec): string {
           : spec.kind === 'meeting'
             ? c(l.chairs.meeting)
             : spec.kind === 'window'
-              ? `${l.windows.model}/${l.windows.frame}`
+              ? `${l.windows.model}/${l.windows.material}/${l.windows.frame}`
               : '';
       return `${version}|item|${spec.kind}|${extra}`;
     }
@@ -70,7 +70,7 @@ function keyOf(spec: ThumbSpec): string {
     case 'chair':
       return `${version}|chair|${c(chairFor(spec.pack, spec.model))}`;
     case 'window':
-      return `${version}|window|${spec.model}|${l.windows.frame}`;
+      return `${version}|window|${spec.model}|${l.windows.material}/${l.windows.frame}`;
     case 'bench':
     case 'lamp':
       return `${version}|${spec.type}|${spec.model}`;

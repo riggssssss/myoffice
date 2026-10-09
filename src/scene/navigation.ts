@@ -96,9 +96,9 @@ export function entranceSpots(): { inside: Spot; outside: Spot } | null {
 }
 
 /** Where people sit on a sofa, in its own frame (seat faces +z), and how high the cushion is. */
-const SOFA_SEATS = [-0.45, 0.45];
-const SOFA_SEAT_Z = 0.22;
-const SOFA_SEAT_TOP = 0.44;
+const SOFA_SEATS = [-0.33, 0.33];
+const SOFA_SEAT_Z = 0.2;
+const SOFA_SEAT_TOP = 0.47;
 
 /**
  * Reception: where a newcomer waits (the `i`th one). On the sofa while there's a free place,

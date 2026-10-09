@@ -56,7 +56,7 @@ function pic(r: StyleRef): string {
 }
 
 const swatches = (list: { hex: string }[], cls = '') =>
-  list.length ? `<span class="swatches ${cls}">${list.map((s) => `<span class="swatch" style="--c:${s.hex}" title="${s.hex}"></span>`).join('')}</span>` : '';
+  list.length ? `<span class="guide-swatches ${cls}">${list.map((s) => `<span class="guide-swatch" style="--c:${s.hex}" title="${s.hex}"></span>`).join('')}</span>` : '';
 
 function guideBlock(g: StyleGuide | null, thinking: boolean, ready: number): string {
   const head = `

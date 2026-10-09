@@ -107,6 +107,31 @@ Organizador abre con el orden del día → cada uno aporta → Escéptico ataca 
 - **Guía de estilo viva:** 20 s después de cada cambio, la directora de arte la reescribe mezclando lo nuevo, sin empezar de cero. Tiene secciones (Luz, Color, Composición, Escena, Materiales, Tipografía, Evitar), la paleta medida y un bloque en inglés para las imágenes. Lo que marcas «Me gusta» pesa el doble; lo que marcas «No» solo enseña qué evitar. Lo que tú escribes en «Editar guía» queda fijado. Hay «Rehacer con todas» y «Deshacer último cambio».
 - **Uso:** el equipo de arte la lleva en su prompt (la directora, completa) y tiene `ver_guia_estilo`. La directora tiene además `revisar_imagen` (notas de 1 a 10 por apartado, qué falla y un prompt corregido). **Toda imagen generada en la oficina** lleva el bloque de estilo, salvo que pidas expresamente otro estilo (`sin_guia`).
 
+## LinkedIn: tu voz, el humanizador y el plan semanal
+
+Adaptado de [linkedin-agent-skill](https://github.com/Jakeschincariol/linkedin-agent-skill) (Jake Schincariol, MIT: aviso en `server/data/LICENSE-linkedin-agent-skill`), en español. Todo vive en Ajustes → Conectores → LinkedIn, que aparece cuando LinkedIn está conectado en Composio. **Nada se publica sin tu aprobación, y nunca más de un post al día.**
+
+- **Tu voz** (`li:voice`): cómo escribes, qué defiendes, qué no tocas y qué pruebas reales puedes usar. La leen quienes escriben por ti: marketing, el equipo de Crecimiento y quien tenga «LinkedIn», «redes» o «copy» en el puesto. Se puede escribir sola a partir de dos o tres posts tuyos.
+- **Humanizador** (`server/humanizer.ts`, sin dependencias, todo en local):
+  - **Limpia:** caracteres invisibles, rayas, comillas curvas, «…» y las muletillas de IA (léxico en español en `server/data/slop.es.json` y en inglés en `slop.en.json`; se pueden editar).
+  - **Marca para reescribir:** «No es solo X, es Y», tríos, preguntas cebo, muros de hashtags, emojis de cohete y frases de largo uniforme.
+  - **Puntúa de 0 a 100 en cinco apartados:** variedad, concreción, muletillas, huella y voz. El apartado más flojo pesa un 40 %.
+  - **Herramienta `humanizar`** para los agentes, y un probador en el panel.
+- **Cada post a LinkedIn**, lo escriba quien lo escriba, pasa por el humanizador antes de llegar a ti.
+  - Si suena a IA, o lleva cifras que no salen de tu voz, tus temas o el dossier, vuelve una vez a quien lo escribió.
+  - En «Para ti» lo ves tal como saldrá, con su nota. **Puedes editarlo antes de aprobar**, y no se aprueba mientras queden huecos `{{tu cifra}}`.
+- **Guía** (`guia_linkedin`):
+  - 21 ganchos en español (`server/data/hooks.es.json`) y la forma de un post (gancho en la línea 1, párrafos cortos, 900-1.300 caracteres, sin enlaces en el cuerpo, como mucho tres hashtags, nada inventado);
+  - el plan semanal;
+  - cómo comentar en posts ajenos;
+  - cómo sacar varios posts de un vídeo o documento;
+  - la rúbrica de perfil sobre 100.
+- **Plan semanal** (`server/linkedin.ts`), si lo activas: posts a la semana (4 recomendados), días, hora, quién lo lleva y tus temas.
+  - Cada semana, con la oficina abierta, prepara el plan (tipo, gancho y ángulo por hueco, y a qué tipo de cuentas dedicar 20 minutos al día) y te lo cuenta en su chat.
+  - Cada día que toca, la IA escribe solo el texto. El resto lo hace la oficina: humanizador, cifras inventadas convertidas en `{{tu cifra}}`, una reescritura si aún suena a IA, y el post a «Para ti».
+  - El panel enseña cómo va cada post: planeado, esperando aprobación, publicado o descartado.
+- **Lo que la API oficial no deja:** leer el feed, los comentarios, los mensajes o las estadísticas de tu perfil personal. Para comentar, responder o puntuar tu perfil, pégale el texto al agente en su chat.
+
 ## Aprendizaje
 
 - **Memoria personal** de cada agente: lo que ha aprendido, p. ej. "a Adrián no le gustan los informes largos".

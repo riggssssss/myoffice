@@ -162,10 +162,12 @@ export function connect(): Promise<void> {
           | { type: 'state'; kind: ChangeKind; state: SimState }
           | { type: 'refused'; text: string }
           | { type: 'project' }
-          | { type: 'refs' };
+          | { type: 'refs' }
+          | { type: 'linkedin' };
         if (msg.type === 'refused') return onRefused(msg.text);
         if (msg.type === 'project') return void document.dispatchEvent(new Event('project-changed'));
         if (msg.type === 'refs') return void document.dispatchEvent(new Event('refs-changed'));
+        if (msg.type === 'linkedin') return void document.dispatchEvent(new Event('linkedin-changed'));
         if (msg.type !== 'state') return;
         adopt(msg.state);
         notify(msg.kind);
@@ -246,6 +248,15 @@ export function closeMessage(id: string): void {
 }
 /** Ask the head who your project needs (`force`: even if nothing changed since last time). */
 export const askHireIdeas = (force = false) => send('askHireIdeas', force);
+/** Applied here at once too, so the «new» badge goes as soon as you look. */
+export function seeItems(ids: string[] | 'all'): void {
+  for (const i of state.items) if (i.unseen && (ids === 'all' || ids.includes(i.id))) i.unseen = false;
+  notify('change');
+  send('seeItems', ids);
+}
+export const starItem = (id: string, on: boolean) => send('starItem', id, on);
+export const archiveItem = (id: string, on: boolean) => send('archiveItem', id, on);
+export const askItemChanges = (id: string, text: string) => send('askItemChanges', id, text);
 
 /** Applied here at once too: the appearance editor previews from local state. */
 export function updateLook(workerId: string, patch: Partial<Look>): void {

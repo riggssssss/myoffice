@@ -20,6 +20,8 @@ import { forgetMcp, mcpStatus, setMcpAccess, testMcp } from './mcpHost';
 import { fileBytes, fileHeaders, fileInfo, makeFile, MAX_FILE, saveFile } from './files';
 import { draw, imageUsage } from './images';
 import { draftAgent } from './agentDraft';
+import { draftVoice, linkedinView, redoPlan, setLinkedInNotifier, setPlan, setVoice, startLinkedIn } from './linkedin';
+import { humanize } from './humanizer';
 import { addRef, editGuide, rebuildGuide, rememberPalette, removeRef, resumeStyle, retryRef, setStyleNotifier, styleView, undoGuide, updateRef } from './style';
 import { LlmError } from './llm';
 import { setFileFinder, setLongKeeper } from '../src/sim/ops';
@@ -166,6 +168,30 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     } catch (e) {
       return json(res, 400, { error: (e as Error).message });
     }
+  }
+
+  // LinkedIn: your voice, the weekly plan and the humanizer (Ajustes → Conectores, once it's connected).
+  if (path === '/api/linkedin' && req.method === 'GET') return json(res, 200, linkedinView());
+  if (path === '/api/linkedin/voice' && req.method === 'PUT') {
+    const problem = setVoice(((await readBody(req)) as { text?: unknown } | null)?.text);
+    return problem ? json(res, 400, { error: problem }) : json(res, 200, linkedinView());
+  }
+  if (path === '/api/linkedin/voice/draft' && req.method === 'POST') {
+    try {
+      return json(res, 200, { text: await draftVoice(((await readBody(req)) as { posts?: unknown } | null)?.posts) });
+    } catch (e) {
+      return json(res, 400, { error: redact((e as Error).message) });
+    }
+  }
+  if (path === '/api/linkedin/plan' && req.method === 'PUT') {
+    const problem = setPlan(await readBody(req));
+    return problem ? json(res, 400, { error: problem }) : json(res, 200, linkedinView());
+  }
+  if (path === '/api/linkedin/plan/redo' && req.method === 'POST') return redoPlan(), json(res, 200, linkedinView());
+  if (path === '/api/linkedin/humanize' && req.method === 'POST') {
+    const text = ((await readBody(req)) as { text?: unknown } | null)?.text;
+    if (typeof text !== 'string' || !text.trim() || text.length > 8000) return json(res, 400, { error: 'Pega un texto de hasta 8.000 caracteres' });
+    return json(res, 200, humanize(text));
   }
 
   // The art director's references and the style guide (Equipo → their file → Estilo).
@@ -331,7 +357,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return a ? json(res, 200, a) : json(res, 404, { error: 'not found' });
     }
     if (req.method === 'PUT') {
-      const problem = await actOnAction(appAct[1], ((await readBody(req)) as { action?: unknown } | null)?.action);
+      const body = (await readBody(req)) as { action?: unknown; text?: unknown } | null;
+      const problem = await actOnAction(appAct[1], body?.action, body?.text);
       return problem ? json(res, 400, { error: problem }) : json(res, 200, getAction(appAct[1]));
     }
   }
@@ -423,6 +450,10 @@ setStyleNotifier(() => {
   for (const ws of sockets) if (ws.readyState === ws.OPEN) ws.send('{"type":"refs"}');
 });
 resumeStyle();
+setLinkedInNotifier(() => {
+  for (const ws of sockets) if (ws.readyState === ws.OPEN) ws.send('{"type":"linkedin"}');
+});
+const stopLinkedIn = startLinkedIn();
 
 // The Proyecto tab refreshes when the connection or its log changes (the view itself goes over /api).
 const stopProject = startProject(() => {
@@ -436,6 +467,7 @@ server.listen(PORT, '127.0.0.1', () => {
 });
 
 function shutdown(): void {
+  stopLinkedIn();
   stopProject();
   stop();
   closeDb();

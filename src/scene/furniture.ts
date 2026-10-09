@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import { calendarTexture } from './calendarBoard';
-import { woodFinish } from './wood';
+import { grainSheen, woodFinish, type WoodTone } from './wood';
 import { ROLES, ROLE_ORDER } from '../sim/seed';
-import { CHAIR_FABRICS, CHAIR_FRAMES, ENTRANCE, WALL_T, WINDOW_FRAMES, windowModel, type ChairPack, type ChairStyle, type DeskStyle, type Item, type WindowStyle } from '../sim/layout';
+import { CHAIR_DEFAULTS, CHAIR_FABRICS, CHAIR_FRAMES, ENTRANCE, WALL_T, windowFrames, windowModel, type ChairPack, type ChairStyle, type DeskStyle, type Item, type WindowStyle } from '../sim/layout';
 import { placeComputer } from './computer';
 import { DESK_SEAT, MEETING_SEATS, meetingChair } from './navigation';
 import { texture, type ScenePalette } from './palette';
-import { placePlant, type ChairKind, type DecorKind, type DeskKind, type PlantKind, type SofaKind, type WindowKind } from './plants';
+import { contactShadow } from './textures';
+import { placePlant, type ChairKind, type DecorKind, type DeskKind, type LampKind, type PlantKind, type SofaKind, type WindowKind } from './plants';
 
 /** Models that arrive after start-up; until then each object shows a simple stand-in. */
 export interface Assets {
@@ -17,6 +18,7 @@ export interface Assets {
   decor: Map<DecorKind, THREE.Object3D> | null;
   windows: Map<WindowKind, THREE.Object3D> | null;
   sofas: Map<SofaKind, THREE.Object3D> | null;
+  lamps: Map<LampKind, THREE.Object3D> | null;
 }
 
 export type MatFn = (slot: keyof ScenePalette, extra?: THREE.MeshStandardMaterialParameters) => THREE.MeshStandardMaterial;
@@ -25,8 +27,6 @@ export interface Built {
   obj: THREE.Group;
   /** Desks: the screen, lit by whoever works there. */
   screen?: THREE.MeshStandardMaterial;
-  /** Desks: the reading lamp, on at night. */
-  lamp?: THREE.PointLight;
   /** Entrance: the leaf's hinge; turning it (negative y) swings the door into the room. */
   door?: THREE.Object3D;
 }
@@ -47,8 +47,95 @@ function cyl(rt: number, rb: number, h: number, mat: THREE.Material, x = 0, y = 
   return m;
 }
 
-/** Flat colored material that does not follow the theme (role accents). */
-const accent = (color: string) => new THREE.MeshStandardMaterial({ color, roughness: 0.85 });
+/** Flat colored material that does not follow the theme (role accents), one per colour. */
+const accents = new Map<string, THREE.MeshStandardMaterial>();
+function accent(color: string): THREE.MeshStandardMaterial {
+  let mat = accents.get(color);
+  if (!mat) {
+    mat = new THREE.MeshStandardMaterial({ color, roughness: 0.85 });
+    mat.userData.shared = true;
+    accents.set(color, mat);
+  }
+  return mat;
+}
+
+// ---------------------------------------------------------------- reading lamps
+
+/**
+ * The desk lamps' light is painted, not computed: a glowing bulb and warm pools on the desk
+ * and the floor round it. A real light per desk made every surface in the office pay for every
+ * lamp, lit or not, and adding a desk recompiled every material.
+ */
+let lampMats: { bulb: THREE.MeshStandardMaterial; shade: THREE.MeshStandardMaterial; desk: THREE.MeshBasicMaterial; floor: THREE.MeshBasicMaterial } | null = null;
+let lampGlow = 0;
+let poolTex: THREE.CanvasTexture | null = null;
+
+function poolTexture(): THREE.CanvasTexture {
+  if (poolTex) return poolTex;
+  const s = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d')!;
+  // Falls off like light from a bulb: bright under it, a long soft tail, black at the rim.
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  for (const [t, a] of [[0, 1], [0.2, 0.72], [0.45, 0.32], [0.7, 0.1], [1, 0]] as const) g.addColorStop(t, `rgba(255,255,255,${a})`);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, s, s);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  poolTex = new THREE.CanvasTexture(c);
+  poolTex.colorSpace = THREE.SRGBColorSpace;
+  return poolTex;
+}
+
+function lampMaterials() {
+  if (lampMats) return lampMats;
+  const pool = (opacity: number) =>
+    new THREE.MeshBasicMaterial({
+      map: poolTexture(),
+      color: '#ffc98a',
+      transparent: true,
+      opacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+    });
+  lampMats = {
+    bulb: new THREE.MeshStandardMaterial({ color: '#fff3d6', emissive: '#ffd7a0', emissiveIntensity: 0, roughness: 0.3 }),
+    // Opal glass: milky white by day, glowing warm from inside at night.
+    shade: new THREE.MeshStandardMaterial({ color: '#f4f1ea', emissive: '#ffcf96', emissiveIntensity: 0, roughness: 0.35, transparent: true, opacity: 0.92 }),
+    desk: pool(0),
+    floor: pool(0),
+  };
+  for (const m of Object.values(lampMats)) m.userData.shared = true;
+  setLampGlow(lampGlow);
+  return lampMats;
+}
+
+/** How bright the reading lamps are, 0 (off) to 1 (full). */
+export function setLampGlow(k: number): void {
+  lampGlow = k;
+  if (!lampMats) return;
+  lampMats.bulb.emissiveIntensity = 3 * k;
+  lampMats.shade.emissiveIntensity = 1.5 * k;
+  lampMats.desk.opacity = 0.65 * k;
+  lampMats.floor.opacity = 0.3 * k;
+  // Off by day: the pools aren't drawn at all.
+  lampMats.desk.visible = lampMats.floor.visible = k > 0.002;
+}
+
+/** A flat pool of lamplight over x0..x1 × z0..z1 at height y, brightest at (cx, cz), fading out by `r`. */
+function lightPool(x0: number, x1: number, z0: number, z1: number, y: number, cx: number, cz: number, r: number, mat: THREE.Material): THREE.Mesh {
+  const geo = new THREE.PlaneGeometry(x1 - x0, z1 - z0).rotateX(-Math.PI / 2).translate((x0 + x1) / 2, y, (z0 + z1) / 2);
+  const pos = geo.attributes.position;
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < pos.count; i++) uv.setXY(i, 0.5 + (pos.getX(i) - cx) / (2 * r), 0.5 + (pos.getZ(i) - cz) / (2 * r));
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 2;
+  mesh.raycast = () => {};
+  return mesh;
+}
 
 /** Simple low-poly pot + crown, shown until the plant models load. */
 function placeholderPlant(m: MatFn, height: number): THREE.Group {
@@ -91,6 +178,7 @@ function finish(key: string, make: () => THREE.MeshStandardMaterialParameters): 
   let mat = finishes.get(key);
   if (!mat) {
     mat = new THREE.MeshStandardMaterial(make());
+    if (mat.map && (key.startsWith('top:') || key.startsWith('window:frame:wood'))) grainSheen(mat);
     mat.userData.shared = true;
     finishes.set(key, mat);
   }
@@ -235,13 +323,22 @@ export function buildItem(item: Item, m: MatFn, assets: Assets, look: RoomLook):
       break;
     case 'shelf':
       buildShelf(g, m);
+      g.add(contactShadow(0.45, 2.45, 'box', 0.35));
       break;
     case 'rug':
       buildRug(g);
       break;
+    case 'armchair': {
+      // Same upholstery and wood as the meeting chairs when those are Roundish too; otherwise its own.
+      const meeting = look.chairs.meeting;
+      g.add(placeChair(meeting.model === 'roundish' ? meeting : CHAIR_DEFAULTS.roundish, 'meeting', m, assets));
+      g.add(contactShadow(0.7, 0.7, 'disc', 0.35));
+      break;
+    }
     case 'sofa': {
-      const model = assets.sofas?.get('Laszlo');
+      const model = assets.sofas?.get('Nari');
       g.add(model ? model.clone(true) : placeholderSofa(m));
+      g.add(contactShadow(2.15, 0.9, 'box', 0.4));
       break;
     }
     case 'whiteboard':
@@ -254,6 +351,7 @@ export function buildItem(item: Item, m: MatFn, assets: Assets, look: RoomLook):
       const height = PLANT_HEIGHT[item.kind];
       const model = PLANT_MODEL[item.kind] ? assets.plants?.get(PLANT_MODEL[item.kind]) : assets.decor?.get(DECOR_MODEL[item.kind]);
       g.add(model ? placePlant(model, m, height) : placeholderPlant(m, Math.min(height, 1.3)));
+      g.add(contactShadow(0.45, 0.45, 'disc', 0.35));
     }
   }
   return out;
@@ -306,9 +404,9 @@ function buildRug(g: THREE.Group): void {
 function placeholderSofa(m: MatFn): THREE.Group {
   const g = new THREE.Group();
   const fabric = m('wicker');
-  g.add(box(2.0, 0.42, 0.95, fabric, 0, 0.21, 0));
-  g.add(box(2.0, 0.4, 0.22, fabric, 0, 0.62, -0.36));
-  for (const side of [-1, 1]) g.add(box(0.2, 0.22, 0.95, fabric, side * 0.9, 0.53, 0));
+  g.add(box(2.2, 0.48, 0.92, fabric, 0, 0.24, 0));
+  g.add(box(2.2, 0.36, 0.22, fabric, 0, 0.66, -0.35));
+  for (const side of [-1, 1]) g.add(box(0.24, 0.3, 0.92, fabric, side * 0.98, 0.63, 0));
   return g;
 }
 
@@ -382,14 +480,39 @@ function buildDesk(g: THREE.Group, item: Item, m: MatFn, assets: Assets, out: Bu
     g.add(box(0.1, 0.02, 0.14, m('chair'), 0.42, 0.78, -0.22));
   }
 
-  // Lamp + its light (only lit at night).
-  g.add(cyl(0.09, 0.11, 0.03, m('metal'), -0.95, 0.785, 0.25));
-  g.add(box(0.025, 0.36, 0.025, m('metal'), -0.95, 0.97, 0.25));
-  g.add(cyl(0.05, 0.13, 0.12, m('metal'), -0.95, 1.16, 0.18));
-  const lamp = new THREE.PointLight('#ffc98a', 0, 3.2, 1.6);
-  lamp.position.set(-0.95, 1.08, 0.1);
-  g.add(lamp);
-  out.lamp = lamp;
+  // Lamp and its light (only lit at night): a bulb under the shade, a pool on the desk top
+  // and a wider, fainter one on the floor round the desk (the desk hides the part under it).
+  const lamp = lampMaterials();
+  const model = assets.lamps?.get('Jwda');
+  if (model) {
+    // The Menu JWDA: its globe glows at night, the dimmer turned towards whoever sits here.
+    const jwda = model.clone(true);
+    const brass = finish('lamp:brass', () => ({ color: '#b08a4e', roughness: 0.35, metalness: 0.85 }));
+    const stone = finish('lamp:stone', () => ({ color: '#8f8a82', roughness: 0.82, metalness: 0 }));
+    const felt = finish('lamp:felt', () => ({ color: '#2b2824', roughness: 1, metalness: 0 }));
+    jwda.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const name = (o.material as THREE.Material).name;
+      o.material = name === 'shade' ? lamp.shade : name === 'bulb' ? lamp.bulb : name === 'body' ? stone : name === 'felt' ? felt : brass;
+      o.castShadow = name !== 'shade' && name !== 'bulb';
+    });
+    jwda.position.set(-0.95, 0.77, 0.22);
+    jwda.rotation.y = Math.PI;
+    g.add(jwda);
+  } else {
+    g.add(cyl(0.09, 0.11, 0.03, m('metal'), -0.95, 0.785, 0.25));
+    g.add(box(0.025, 0.36, 0.025, m('metal'), -0.95, 0.97, 0.25));
+    g.add(cyl(0.05, 0.13, 0.12, m('metal'), -0.95, 1.16, 0.18));
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.04, 12, 8), lamp.bulb);
+    bulb.position.set(-0.95, 1.095, 0.18);
+    g.add(bulb);
+  }
+  g.add(lightPool(-1.2, 0.3, -0.5, 0.5, 0.775, -0.95, 0.18, 0.95, lamp.desk));
+  g.add(lightPool(-2.9, 1.0, -1.8, 2.1, 0.006, -0.95, 0.1, 1.9, lamp.floor));
+
+  // Contact shade under the desk top and the chair.
+  g.add(contactShadow(2.3, 0.92, 'box', 0.3));
+  g.add(contactShadow(0.62, 0.62, 'disc', 0.3).translateX(DESK_SEAT.x).translateZ(DESK_SEAT.z));
 
   if (item.decor === 'books') {
     const books = [ROLES.research.color, ROLES.organizer.color, ROLES.dev.color];
@@ -411,6 +534,7 @@ function buildMeeting(g: THREE.Group, m: MatFn, assets: Assets, chairStyle: Chai
   const rug = cyl(2.3, 2.3, 0.02, m('rug'), 0, 0.01, 0, 48);
   rug.castShadow = false;
   g.add(rug);
+  g.add(contactShadow(1.7, 1.7, 'disc', 0.3, 0.026));
   g.add(cyl(0.95, 0.95, 0.06, m('wood'), 0, 0.74, 0, 40));
   g.add(cyl(0.08, 0.12, 0.7, m('metal'), 0, 0.36, 0, 12));
   g.add(cyl(0.4, 0.4, 0.03, m('metal'), 0, 0.02, 0, 24));
@@ -420,6 +544,7 @@ function buildMeeting(g: THREE.Group, m: MatFn, assets: Assets, chairStyle: Chai
     chair.position.set(s.x, 0, s.z);
     chair.rotation.y = s.rot;
     g.add(chair);
+    g.add(contactShadow(0.5, 0.5, 'disc', 0.28, 0.026).translateX(s.x).translateZ(s.z));
   }
 }
 
@@ -469,11 +594,33 @@ function buildCalendar(g: THREE.Group, m: MatFn): void {
 // ---------------------------------------------------------------- windows
 
 const glass = () =>
-  finish('window:glass', () => ({ color: '#cfe3ee', roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide }));
+  finish('window:glass', () => ({ color: '#cfe3ee', emissive: '#ffd8a6', emissiveIntensity: 0, roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide }));
 
+/**
+ * The rooms' light seen through the glass from outside, 0–1 (the puddles' mirror sees the
+ * windows from outside; from where we look in, the glass stays clear).
+ */
+export function setWindowGlow(k: number): void {
+  glass().emissiveIntensity = 4.5 * k;
+}
+
+/** The frame, by material: satin PVC, glossy lacquer, oiled wood with its grain, brushed aluminium, steel. */
 function windowFrame(style: WindowStyle): THREE.MeshStandardMaterial {
-  const color = WINDOW_FRAMES.find((f) => f.id === style.frame)!.color;
-  return finish(`window:frame:${style.frame}`, () => ({ color, roughness: style.frame === 'alu' ? 0.35 : 0.6, metalness: style.frame === 'alu' ? 0.5 : 0.05 }));
+  const color = (windowFrames(style.material).find((f) => f.id === style.frame) ?? windowFrames(style.material)[0]).color;
+  return finish(`window:frame:${style.material}:${style.frame}`, () => {
+    switch (style.material) {
+      case 'wood':
+        return { ...woodFinish(style.frame as WoodTone), roughness: 0.55 };
+      case 'lacquer':
+        return { color, roughness: 0.26, metalness: 0 };
+      case 'alu':
+        return { color, roughness: 0.32, metalness: 0.75 };
+      case 'steel':
+        return { color, roughness: 0.48, metalness: 0.6 };
+      default:
+        return { color, roughness: 0.55, metalness: 0 };
+    }
+  });
 }
 
 /**
@@ -482,7 +629,7 @@ function windowFrame(style: WindowStyle): THREE.MeshStandardMaterial {
  */
 export function buildWindow(g: THREE.Group, assets: Assets, style: WindowStyle): void {
   const frame = windowFrame(style);
-  const template = assets.windows?.get(style.model === 'door' ? 'DoorWindow' : 'Window');
+  const template = assets.windows?.get(style.model === 'door' ? 'DoorWindow' : style.model === 'classic' ? 'Classic' : 'Window');
   if (template) {
     const win = template.clone(true);
     const handle = finish('window:handle', () => ({ color: '#b9bcc0', roughness: 0.3, metalness: 0.7 }));

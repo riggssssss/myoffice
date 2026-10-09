@@ -65,5 +65,24 @@ export function woodMap(tone: WoodTone): THREE.Texture {
 
 /** Material settings for one tone: a lightly oiled finish. */
 export function woodFinish(tone: WoodTone): THREE.MeshStandardMaterialParameters {
-  return { map: woodMap(tone), roughness: 0.6, metalness: 0 };
+  return { map: woodMap(tone), roughness: 0.52, metalness: 0 };
+}
+
+/**
+ * Sheen that follows the grain, from the colour photo alone (no extra map): pale wood is a
+ * touch glossier, dark grain and seams rougher, so highlights break up along the boards.
+ */
+export function grainSheen(mat: THREE.MeshStandardMaterial): void {
+  mat.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace(
+      '#include <roughnessmap_fragment>',
+      `#include <roughnessmap_fragment>
+      #ifdef USE_MAP
+        float grainLum = dot( sampledDiffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+        roughnessFactor = clamp( roughnessFactor * ( 1.2 - 0.7 * grainLum ), 0.3, 1.0 );
+      #endif`,
+    );
+  };
+  // Named, so it never shares a program with another material's hook once the clouds wrap it.
+  mat.customProgramCacheKey = () => 'grain-sheen';
 }

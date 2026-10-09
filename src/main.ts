@@ -8,9 +8,10 @@ import './styles.css';
 
 import { layoutItem, onLayoutChange, pruneDesks } from './sim/layout';
 import { deskOwners } from './sim/ops';
-import { DEFAULT_SETTINGS, type Settings } from './sim/settings';
+import { DEFAULT_SETTINGS, DEFAULT_SOFA_COLOR, type Settings } from './sim/settings';
 import { api, callMeeting, connect, flush, getSelectedId, getState, onConnection, onRefusal, readMessages, reset, select, subscribe, task } from './sim/store';
 import { OfficeScene } from './scene/scene';
+import { setSofaColor } from './scene/plants';
 import { guessLocation, sunPosition } from './scene/sun';
 import { Region, fill, pct } from './ui/dom';
 import { bindRoom, renderRoom, roomFooter } from './ui/roomPanel';
@@ -37,6 +38,7 @@ import { bindCalendar, openCalendar } from './ui/calendar';
 import { esc } from './ui/dom';
 import { icon } from './ui/icons';
 import { bindTasks, renderTasks } from './ui/tasksTab';
+import { bindItems, forgetFresh, hydrateItems, renderItems, seeNewItems, unseenItems } from './ui/itemsTab';
 import { activityShown, bindTeam, renderTeam, resetDetailTab } from './ui/teamTab';
 import { openWorkerDialog } from './ui/workerDialog';
 import { now } from './ui/now';
@@ -45,6 +47,7 @@ import { loadSecrets } from './ui/keyField';
 import { loadLibrary, openSettings } from './ui/settingsDialog';
 import { setupTopbar } from './ui/topbar';
 import { setupWeatherMenu } from './ui/weatherMenu';
+import { setupClockMenu } from './ui/clockMenu';
 import { setupAiStatus } from './ui/aiStatus';
 import { readPref, savePref } from './sim/prefs';
 
@@ -151,6 +154,14 @@ try {
 }
 config.settings = settings;
 applyDaylight();
+setSofaColor(settings.sofaColor ?? DEFAULT_SOFA_COLOR);
+// Picking a colour in Ajustes shows on the sofa at once; closing without saving puts the saved one back.
+document.addEventListener('input', (e) => {
+  const box = e.target as HTMLInputElement;
+  if (box.id !== 's-sofa') return;
+  setSofaColor(box.value);
+  for (const b of document.querySelectorAll<HTMLElement>('[data-sofa-swatch]')) b.setAttribute('aria-pressed', String(b.dataset.sofaSwatch === box.value.toLowerCase()));
+});
 setInterval(applyDaylight, 30_000);
 
 function showSettings(tab: 'general' | 'ai' | 'mcp' | 'project' = 'general'): void {
@@ -167,17 +178,24 @@ $('settings').innerHTML = icon.settings(16);
 $('settings').addEventListener('click', () => showSettings());
 document.addEventListener('open-settings', (e) => showSettings((e as CustomEvent<'general' | 'ai' | 'mcp' | 'project'>).detail));
 // Keys or connectors may have changed: the agent's AI section reflects them.
-$('settings-dialog').addEventListener('close', () => regions[activeTab].render(true));
+$('settings-dialog').addEventListener('close', () => {
+  setSofaColor(settings.sofaColor ?? DEFAULT_SOFA_COLOR);
+  regions[activeTab].render(true);
+});
 
 // ---------- panel ----------
 const topbar = setupTopbar();
 setupWeatherMenu();
+setupClockMenu();
+// A time picked on the clock lights the office at once.
+document.addEventListener('clock-change', () => applyDaylight());
 setupAiStatus();
 const regions = {
-  team: new Region($('pane-team'), renderTeam),
+  team: new Region($('pane-team'), renderTeam, hydrateItems),
   tasks: new Region($('pane-tasks'), renderTasks),
   talks: new Region($('pane-talks'), renderTalks),
   inbox: new Region($('pane-inbox'), renderInbox),
+  items: new Region($('pane-items'), renderItems, hydrateItems),
 };
 type TabId = keyof typeof regions;
 let activeTab: TabId = 'team';
@@ -185,6 +203,7 @@ let activeTab: TabId = 'team';
 bindTeam(regions.team.el, () => regions.team.render(true));
 bindTasks(regions.tasks.el, () => regions.tasks.render(true));
 bindInbox();
+bindItems(() => regions[activeTab].render(true));
 document.addEventListener('click', (e) => {
   if ((e.target as HTMLElement).closest('[data-open-inbox]')) showTab('inbox');
 });
@@ -206,6 +225,7 @@ document.addEventListener('open-conversation', (e) => {
 
 function showTab(id: TabId): void {
   if (activeTab === id) return;
+  if (activeTab === 'items') forgetFresh();
   activeTab = id;
   for (const key of Object.keys(regions) as TabId[]) {
     const on = key === id;
@@ -216,6 +236,7 @@ function showTab(id: TabId): void {
   }
   regions[id].render(true);
   if (id === 'inbox') syncInbox();
+  if (id === 'items') syncItems();
 }
 
 const tabs = document.querySelector<HTMLElement>('[role="tablist"]')!;
@@ -225,7 +246,7 @@ tabs.addEventListener('click', (e) => {
 });
 tabs.addEventListener('keydown', (e) => {
   if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-  const order: TabId[] = ['team', 'tasks', 'talks', 'inbox'];
+  const order: TabId[] = ['team', 'tasks', 'talks', 'inbox', 'items'];
   const next = order[(order.indexOf(activeTab) + (e.key === 'ArrowRight' ? 1 : order.length - 1)) % order.length];
   showTab(next);
   $(`tab-${next}`).focus();
@@ -506,6 +527,7 @@ subscribe((kind) => {
   regions[activeTab].render();
   syncNumbers();
   syncInbox();
+  syncItems();
 });
 
 /** «Para ti» shows how many are new; looking at the list counts as reading them. */
@@ -520,8 +542,22 @@ function syncInbox(): void {
   inboxBadge.textContent = n > 9 ? '9+' : String(n);
 }
 
+/** «Entregas» shows how many have reached you since you last looked. */
+const itemsBadge = $('items-badge');
+function syncItems(): void {
+  const n = unseenItems();
+  if (n && activeTab === 'items' && !tabs.hidden && document.visibilityState === 'visible') {
+    seeNewItems();
+    regions.items.render();
+    return;
+  }
+  itemsBadge.hidden = !n;
+  itemsBadge.textContent = n > 9 ? '9+' : String(n);
+}
+
 regions.team.render(true);
 syncNumbers();
+syncItems();
 
 // ---------- loop ----------
 let last = performance.now();

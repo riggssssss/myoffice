@@ -1,4 +1,5 @@
 import type { Look } from './look';
+import type { PostReview } from './linkedin';
 import type { TextProvider, WorkerAi } from './settings';
 
 export type RoleId =
@@ -132,6 +133,73 @@ export interface ChatFile {
   kind: 'image' | 'doc';
 }
 
+/** What someone can make and hand over (see ITEM_KINDS in items.ts for the words). */
+export type ItemKind =
+  | 'doc'
+  | 'image'
+  | 'link'
+  | 'reference'
+  | 'code'
+  | 'copy'
+  | 'prompt'
+  | 'data'
+  | 'idea'
+  | 'plan'
+  | 'report'
+  | 'contact'
+  | 'tool'
+  | 'budget'
+  | 'palette';
+
+/** One hop on its way to you: who did what with it. */
+export interface ItemStep {
+  at: number;
+  /** A worker id, or 'owner'. */
+  by: string;
+  /**
+   * made: they made it; up: passed it up as it was; better: improved it and passed it up;
+   * back: sent it back to redo; dropped: set it aside; sent: straight to you in a chat;
+   * asked: you asked for changes; redo: a new version replaced it.
+   */
+  act: 'made' | 'up' | 'better' | 'back' | 'dropped' | 'sent' | 'asked' | 'redo';
+  note: string;
+}
+
+/**
+ * Something someone made or found: a document, a picture, a link, a prompt… It sits in its
+ * maker's inventory, goes up the chain (each boss looks at it, improves it, sends it back or
+ * sets it aside) and reaches you filtered.
+ */
+export interface Item {
+  id: string;
+  kind: ItemKind;
+  title: string;
+  /** What it says (a copy, a script, a prompt, a summary); may be empty. */
+  text: string;
+  /** Where it is, for a link or a reference. */
+  url?: string;
+  files?: ChatFile[];
+  images?: ChatImage[];
+  /** Who made it. */
+  by: string;
+  /** Whose inventory it's in: a worker id, or 'owner' once it reached you. */
+  holder: string;
+  /**
+   * held: its maker keeps it (a draft); review: waiting for the holder (a boss) to look at it;
+   * back: returned to its maker to redo; delivered: yours; dropped: set aside on the way;
+   * replaced: a newer version took its place; archived: you put it away.
+   */
+  status: 'held' | 'review' | 'back' | 'delivered' | 'dropped' | 'replaced' | 'archived';
+  taskId: string | null;
+  at: number;
+  /** Goes up each time it's redone. */
+  v: number;
+  trail: ItemStep[];
+  /** Delivered and you haven't looked at it yet. */
+  unseen?: boolean;
+  starred?: boolean;
+}
+
 /** A picture from one of your apps (an address on its site), shown in the chat. */
 export interface ChatImage {
   url: string;
@@ -255,7 +323,7 @@ export type MessageAction =
   | { type: 'meeting' }
   | { type: 'ideas' }
   | { type: 'change'; changeId: string }
-  | { type: 'app'; actionId: string };
+  | { type: 'app'; actionId: string; review?: PostReview };
 
 /** Something an agent tells you directly: a reminder, a question, a suggestion to hire… */
 export interface OwnerMessage {
@@ -486,6 +554,8 @@ export interface SimState {
   /** Everything the agents say to you directly, newest first. */
   inbox: OwnerMessage[];
   hireIdeas: HireIdeas;
+  /** Everything the team has made or found, in whoever's inventory it is now (or yours). */
+  items: Item[];
   ai: AiStatus;
   nextId: number;
 }

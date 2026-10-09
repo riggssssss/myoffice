@@ -7,6 +7,7 @@ import { randomBytes } from 'node:crypto';
 import type { AppAction } from '../src/sim/apps';
 import { getState, log, notify, tellOwner, worker } from '../src/sim/ops';
 import type { Worker } from '../src/sim/types';
+import type { PostReview } from '../src/sim/linkedin';
 import { getJson, setJson } from './db';
 import { redact } from './vault';
 
@@ -23,19 +24,33 @@ const actions = () => getJson<AppAction[]>('apps:actions') ?? [];
 const save = (a: AppAction) => setJson('apps:actions', [a, ...actions().filter((x) => x.id !== a.id)].slice(0, 100));
 export const getAction = (id: string) => actions().find((a) => a.id === id) ?? null;
 
-export function propose(me: Worker, via: AppAction['via'], app: string, appName: string, tool: string, args: Record<string, unknown>, why: string): AppAction {
-  const a: AppAction = { id: `a${randomBytes(5).toString('hex')}`, at: Date.now(), by: me.id, byName: me.name, via, app, tool, why, args, status: 'open', result: null };
+export function propose(me: Worker, via: AppAction['via'], app: string, appName: string, tool: string, args: Record<string, unknown>, why: string, review?: PostReview): AppAction {
+  const a: AppAction = { id: `a${randomBytes(5).toString('hex')}`, at: Date.now(), by: me.id, byName: me.name, via, app, tool, why, args, status: 'open', result: null, ...(review ? { review } : {}) };
   save(a);
+  if (review) {
+    // A post: you read it as it will go out, with how human it sounds.
+    const text = Object.values(args).find((v): v is string => typeof v === 'string' && v.length > 40) ?? '';
+    tellOwner(me.id, 'app', `Post para tu LinkedIn: ${why}`, redact(text).slice(0, 3000), { type: 'app', actionId: a.id, review });
+    return a;
+  }
   const shown = redact(JSON.stringify(args, null, 1)).slice(0, 700);
   tellOwner(me.id, 'app', `Quiere usar ${appName}: ${why}`, `${tool}\n${shown}`, { type: 'app', actionId: a.id });
   return a;
 }
 
 /** You approve or turn down an agent's action. */
-export async function actOnAction(id: string, action: unknown): Promise<string | null> {
+export async function actOnAction(id: string, action: unknown, text?: unknown): Promise<string | null> {
   const a = getAction(id);
   if (!a) return 'Esa acción ya no existe';
   if (a.status !== 'open' && !(a.status === 'failed' && action === 'approve')) return 'Esa acción ya no está pendiente';
+  // A post you edited on its card goes out as you left it (you're its author).
+  if (action === 'approve' && a.review && typeof text === 'string') {
+    const t = text.trim();
+    if (!t || t.length > 3000) return 'El post tiene que tener texto (hasta 3.000 caracteres)';
+    if (/\{\{[^}]*\}\}/.test(t)) return 'Rellena los huecos {{…}} antes de aprobarlo';
+    const key = Object.keys(a.args).find((k) => typeof a.args[k] === 'string' && (a.args[k] as string).length > 40);
+    if (key) a.args[key] = t;
+  }
   const close = () => {
     const m = getState().inbox.find((x) => x.action?.type === 'app' && x.action.actionId === id);
     if (m) m.closed = true;

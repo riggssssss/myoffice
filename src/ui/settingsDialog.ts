@@ -1,5 +1,5 @@
 import { guessLocation } from '../scene/sun';
-import { DEFAULT_WORK_PER_HOUR, IMAGE_QUALITY, KEYS, MAX_CHAIN, WORK_PACE, type ImageQuality, type ImageUsage, MCP_PRESETS, mcpSecret, modelLabel, NVIDIA_MODELS, PROVIDERS, validModel, type AiChoice, type McpPreset, type McpServer, type Settings, type TextProvider } from '../sim/settings';
+import { DEFAULT_SOFA_COLOR, SOFA_COLORS, DEFAULT_WORK_PER_HOUR, IMAGE_QUALITY, KEYS, MAX_CHAIN, WORK_PACE, type ImageQuality, type ImageUsage, MCP_PRESETS, mcpSecret, modelLabel, NVIDIA_MODELS, PROVIDERS, validModel, type AiChoice, type McpPreset, type McpServer, type Settings, type TextProvider } from '../sim/settings';
 import { api, fileUrl, getState, setOfficeInfo } from '../sim/store';
 import type { ChatFile } from '../sim/types';
 import { esc } from './dom';
@@ -10,6 +10,7 @@ import { modelInput } from './modelInput';
 import { loadProject, projectChange, projectClick, projectPanel, projectSubmit, watchProject } from './projectSettings';
 import { appsChange, appsClick, appsInput, appsPanel, COMPOSIO_KEY, composioKeySection, loadApps } from './appsSettings';
 import { brandLogo } from './brandLogos';
+import { linkedinChange, linkedinClick, linkedinInput, linkedinPanel } from './linkedinPanel';
 import { APP_ACCESS, type AppAccess } from '../sim/apps';
 
 type Tab = 'general' | 'ai' | 'mcp' | 'project';
@@ -111,6 +112,17 @@ export async function openSettings(current: Settings, onSaved: (s: Settings) => 
           <div class="field">
             <label for="s-north">La pared del fondo mira al…</label>
             <select id="s-north" name="north">${COMPASS.map(([deg, name]) => `<option value="${deg}" ${deg === north ? 'selected' : ''}>${name}</option>`).join('')}</select>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h3 class="section-title">Sofá de la recepción</h3>
+          <p class="section-note">Terciopelo. Elige un color: lo ves en la oficina al momento y queda al guardar.</p>
+          <div class="sofa-swatches" role="group" aria-label="Colores de terciopelo">
+            ${SOFA_COLORS.map(([hex, name]) => `<button class="sofa-swatch" type="button" data-sofa-swatch="${hex}" style="--swatch:${hex}" aria-pressed="${(settings.sofaColor ?? DEFAULT_SOFA_COLOR) === hex}" title="${name}" aria-label="${name}"></button>`).join('')}
+            <label class="sofa-custom" title="Otro color">
+              <span class="sr-only">Otro color</span>
+              <input id="s-sofa" name="sofaColor" type="color" value="${esc(settings.sofaColor ?? DEFAULT_SOFA_COLOR)}" />
+            </label>
           </div>
         </section>
         <p class="field-error" id="s-error" role="alert" hidden></p>
@@ -375,6 +387,7 @@ export async function openSettings(current: Settings, onSaved: (s: Settings) => 
     <div class="settings-form">
       <p class="settings-lead">Las apps donde trabajas (correo, redes, documentos, tareas…), conectadas con Composio: el equipo lee lo que necesite y, con tu permiso, escribe, envía o publica. Cada app se conecta en su propia página y el acceso queda en tu cuenta de Composio: si compartes la oficina, nadie se lleva tus apps.</p>
       ${appsPanel()}
+      ${linkedinPanel()}
       <section class="settings-section">
         <h3 class="section-title">Servidores MCP <span class="muted">(avanzado)</span></h3>
         <p class="section-note">Programas en tu ordenador o servidores https que dan herramientas a los agentes (buscadores, lectores de webs…). Cada uno recibe solo sus propias claves. Márcalos en la ficha de cada agente (pestaña IA): solo quien lo tenga marcado lo usa.</p>
@@ -549,8 +562,16 @@ export async function openSettings(current: Settings, onSaved: (s: Settings) => 
       return render();
     }
     if (tab === 'project' && (await projectClick(t, render))) return;
+    if (tab === 'mcp' && (await linkedinClick(t, render))) return;
     if (tab === 'mcp' && (await appsClick(t, render))) return;
     if (t.closest('[data-locate]')) return locate();
+    const swatch = t.closest<HTMLElement>('[data-sofa-swatch]');
+    if (swatch) {
+      const box = d.querySelector<HTMLInputElement>('#s-sofa')!;
+      box.value = swatch.dataset.sofaSwatch!;
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
     if (t.closest('[data-image-test]')) {
       imageTest = { state: 'busy', text: '' };
       render();
@@ -629,6 +650,7 @@ export async function openSettings(current: Settings, onSaved: (s: Settings) => 
   d.onchange = async (e) => {
     const t = e.target as HTMLInputElement | HTMLSelectElement;
     if (tab === 'project' && (await projectChange(t as HTMLInputElement, render))) return;
+    if (tab === 'mcp' && (await linkedinChange(t, render))) return;
     if (tab === 'mcp' && (await appsChange(t, render))) return;
     if (t.dataset.mcpAccess) {
       mcpState = await api<typeof mcpState>(`/api/mcp/${t.dataset.mcpAccess}/access`, 'PUT', { access: t.value }).catch(() => mcpState);
@@ -662,6 +684,7 @@ export async function openSettings(current: Settings, onSaved: (s: Settings) => 
   };
 
   d.oninput = (e) => {
+    if (tab === 'mcp' && linkedinInput(e.target as HTMLElement)) return;
     if (tab === 'mcp') appsInput(e.target as HTMLInputElement, render);
   };
   // One listener whichever time the dialog was opened: the latest render.
@@ -685,7 +708,7 @@ export async function openSettings(current: Settings, onSaved: (s: Settings) => 
     if (!v('lon') || !Number.isFinite(lon) || lon < -180 || lon > 180) return fail('s-error', 'La longitud va de −180 a 180.');
     setOfficeInfo(v('agency'), v('project'));
     try {
-      await save({ location: { lat, lon, place: v('place'), guessed: false }, north: Number(v('north')) });
+      await save({ location: { lat, lon, place: v('place'), guessed: false }, north: Number(v('north')), sofaColor: v('sofaColor') });
       d.close();
     } catch {
       fail('s-error', 'No se pudo guardar. ¿Está en marcha el servidor local?');

@@ -27,6 +27,7 @@ export type ItemKind =
   | 'meeting'
   | 'shelf'
   | 'sofa'
+  | 'armchair'
   | 'rug'
   | 'whiteboard'
   | 'calendar'
@@ -97,10 +98,12 @@ export const KINDS: Record<ItemKind, KindInfo> = {
     unique: true,
   },
   shelf: { label: 'Estantería', category: 'Mobiliario', footprint: { w: 0.45, d: 2.5 } },
-  /** Laszlo bouclé loveseat (user-supplied .obj, converted): 2.03 × 0.99 m, seat facing +z. */
+  /** Nari tufted sofa (user-supplied .fbx, converted): 2.23 × 0.93 m, seat facing +z. */
   /** Wool rug, "Maze" weave (user-supplied textures). */
   rug: { label: 'Alfombra de lana', category: 'Mobiliario', footprint: { w: 2.4, d: 1.7 }, flat: true },
-  sofa: { label: 'Sofá Laszlo', category: 'Mobiliario', footprint: { w: 2.1, d: 1.0 }, solid: [{ w: 2.1, d: 0.5, cz: -0.25 }] },
+  sofa: { label: 'Sofá Nari', category: 'Mobiliario', footprint: { w: 2.25, d: 0.95 }, solid: [{ w: 2.25, d: 0.5, cz: -0.22 }] },
+  /** The Roundish chair on its own, to place anywhere (reception, a corner to read). */
+  armchair: { label: 'Butaca Roundish', category: 'Mobiliario', footprint: { w: 0.75, d: 0.75 } },
   plantLowA: { label: 'Ave del paraíso', category: 'Plantas', footprint: { w: 0.7, d: 0.7 } },
   plantLowB: { label: 'Ave del paraíso II', category: 'Plantas', footprint: { w: 0.7, d: 0.7 } },
   wickerVase: { label: 'Cesta de mimbre', category: 'Plantas', footprint: { w: 0.75, d: 0.75 } },
@@ -165,6 +168,7 @@ export type WallKind =
   | 'panelRed'
   | 'brick'
   | 'concrete'
+  | 'limewash'
   | 'stripes';
 export const WALLS: { id: WallKind; label: string }[] = [
   { id: 'plain', label: 'Liso (el de siempre)' },
@@ -178,6 +182,7 @@ export const WALLS: { id: WallKind; label: string }[] = [
   { id: 'panelRed', label: 'Panel de nogal rojizo' },
   { id: 'brick', label: 'Ladrillo pintado' },
   { id: 'concrete', label: 'Microcemento' },
+  { id: 'limewash', label: 'Pintura a la cal' },
   { id: 'stripes', label: 'Papel a rayas' },
 ];
 
@@ -289,24 +294,89 @@ export const DESK_DECOR: { id: DeskDecor; label: string }[] = [
 export const ENTRANCE = { width: 1.1, head: 2.15, clear: 1.4 };
 
 /** Every window in the office shares one design; each one is placed on its own. */
-export type WindowModel = 'slider' | 'door';
+export type WindowModel = 'slider' | 'door' | 'classic';
 export interface WindowStyle {
   model: WindowModel;
+  /** What the frame is made of; `frame` is its colour, from that material's own list. */
+  material: WindowMaterial;
   frame: string;
 }
 /** Opening each model cuts in the wall (metres, from the floor). */
 export const WINDOW_MODELS: { id: WindowModel; label: string; note: string; width: number; sill: number; head: number }[] = [
   { id: 'slider', label: 'Corredera', note: 'Ventana de dos hojas con antepecho', width: 2.0, sill: 0.71, head: 1.99 },
   { id: 'door', label: 'Balconera', note: 'Puerta ventana hasta el suelo', width: 2.1, sill: 0, head: 2.05 },
+  { id: 'classic', label: 'Clásica', note: 'Ventana de madera de cuatro hojas con montante, alta', width: 1.26, sill: 0.5, head: 2.46 },
 ];
-export const WINDOW_FRAMES: { id: string; label: string; color: string }[] = [
-  { id: 'white', label: 'Blanco', color: '#efede8' },
-  { id: 'anthracite', label: 'Antracita', color: '#3a3d42' },
-  { id: 'black', label: 'Negro', color: '#1e1e1e' },
-  { id: 'oak', label: 'Roble', color: '#b98b5a' },
-  { id: 'alu', label: 'Aluminio', color: '#b4b7ba' },
+export type WindowMaterial = 'pvc' | 'lacquer' | 'wood' | 'alu' | 'steel';
+/** Frame materials, each with its colours. Natural wood's ids are the veneer tones (see wood.ts). */
+export const WINDOW_MATERIALS: { id: WindowMaterial; label: string; note: string; frames: { id: string; label: string; color: string }[] }[] = [
+  {
+    id: 'pvc',
+    label: 'PVC',
+    note: 'Satinado, el más habitual',
+    frames: [
+      { id: 'white', label: 'Blanco', color: '#efede8' },
+      { id: 'cream', label: 'Crema', color: '#e4dccb' },
+      { id: 'grey', label: 'Gris', color: '#8d9094' },
+      { id: 'anthracite', label: 'Antracita', color: '#3a3d42' },
+    ],
+  },
+  {
+    id: 'lacquer',
+    label: 'Madera lacada',
+    note: 'Pintura semibrillante sobre madera',
+    frames: [
+      { id: 'offwhite', label: 'Blanco roto', color: '#ece6da' },
+      { id: 'sage', label: 'Salvia', color: '#9aa58e' },
+      { id: 'green', label: 'Verde inglés', color: '#2f4a3a' },
+      { id: 'navy', label: 'Azul marino', color: '#2c3a52' },
+      { id: 'black', label: 'Negro', color: '#1e1e1e' },
+    ],
+  },
+  {
+    id: 'wood',
+    label: 'Madera natural',
+    note: 'Veta de verdad, aceitada',
+    frames: [
+      { id: 'honey', label: 'Miel', color: '#c79a5e' },
+      { id: 'natural', label: 'Natural', color: '#a77b4f' },
+      { id: 'red', label: 'Rojiza', color: '#8d4f35' },
+      { id: 'smoked', label: 'Ahumada', color: '#6e5a48' },
+      { id: 'dark', label: 'Oscura', color: '#4a3326' },
+    ],
+  },
+  {
+    id: 'alu',
+    label: 'Aluminio',
+    note: 'Metal cepillado',
+    frames: [
+      { id: 'silver', label: 'Natural', color: '#b4b7ba' },
+      { id: 'champagne', label: 'Champán', color: '#c9b48c' },
+      { id: 'bronze', label: 'Bronce', color: '#6e5440' },
+      { id: 'black', label: 'Negro', color: '#26272a' },
+    ],
+  },
+  {
+    id: 'steel',
+    label: 'Acero',
+    note: 'Perfil fino, aire industrial',
+    frames: [
+      { id: 'black', label: 'Negro', color: '#1e1e1e' },
+      { id: 'graphite', label: 'Grafito', color: '#44474b' },
+      { id: 'rust', label: 'Óxido', color: '#5a3b2b' },
+    ],
+  },
 ];
-export const DEFAULT_WINDOW_STYLE: WindowStyle = { model: 'slider', frame: 'white' };
+export const windowFrames = (m: WindowMaterial) => (WINDOW_MATERIALS.find((x) => x.id === m) ?? WINDOW_MATERIALS[0]).frames;
+export const DEFAULT_WINDOW_STYLE: WindowStyle = { model: 'slider', material: 'pvc', frame: 'white' };
+/** Saves from before materials had only a colour: each one becomes the material it looked like. */
+const LEGACY_FRAME: Record<string, [WindowMaterial, string]> = {
+  white: ['pvc', 'white'],
+  anthracite: ['pvc', 'anthracite'],
+  black: ['steel', 'black'],
+  oak: ['wood', 'natural'],
+  alu: ['alu', 'silver'],
+};
 export const windowModel = (id: WindowModel) => WINDOW_MODELS.find((m) => m.id === id)!;
 
 /** Round the building: what the ground is, and what the sky is like (its light and its clouds). */
@@ -822,10 +892,10 @@ function load(): Saved {
         }
         s.chairs = chairs;
         const w = s.windows;
-        s.windows = {
-          model: WINDOW_MODELS.some((m) => m.id === w?.model) ? w.model : DEFAULT_WINDOW_STYLE.model,
-          frame: WINDOW_FRAMES.some((f) => f.id === w?.frame) ? w.frame : DEFAULT_WINDOW_STYLE.frame,
-        };
+        const material = WINDOW_MATERIALS.some((m) => m.id === w?.material) ? w.material : (LEGACY_FRAME[w?.frame]?.[0] ?? DEFAULT_WINDOW_STYLE.material);
+        const frames = windowFrames(material);
+        const frame = frames.some((f) => f.id === w?.frame) ? w.frame : w?.material ? frames[0].id : (LEGACY_FRAME[w?.frame]?.[1] ?? frames[0].id);
+        s.windows = { model: WINDOW_MODELS.some((m) => m.id === w?.model) ? w.model : DEFAULT_WINDOW_STYLE.model, material, frame };
         const o = s.outdoor;
         s.outdoor = {
           ground: GROUNDS.some((g) => g.id === o?.ground) ? o.ground : DEFAULT_OUTDOOR.ground,
@@ -1111,6 +1181,9 @@ export function setDeskStyle(patch: Partial<DeskStyle>): void {
 /** Every window changes together. */
 export function setWindowStyle(patch: Partial<WindowStyle>): void {
   saved.windows = { ...saved.windows, ...patch };
+  // Another material: its first colour, unless the one you had exists in it too.
+  const frames = windowFrames(saved.windows.material);
+  if (!frames.some((f) => f.id === saved.windows.frame)) saved.windows.frame = frames[0].id;
   changed();
 }
 

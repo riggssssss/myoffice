@@ -26,6 +26,7 @@ import { openTaskDialog } from './taskDialog';
 import { openWorkerDialog } from './workerDialog';
 import { openTemplateDialog } from './teamTemplates';
 import { bindStyle, styleChange, styleClick, stylePane } from './stylePane';
+import { inventoryPane } from './itemsTab';
 import { agentKey, PROVIDERS, type TextProvider } from '../sim/settings';
 import { modelInput } from './modelInput';
 import { config, openSettingsAt } from './config';
@@ -191,9 +192,10 @@ function fixedPlace(w: Worker, boss: Worker | undefined): string {
   return `Responde a ${esc(boss?.name ?? 'dirección')}. Es un puesto fijo.`;
 }
 
-type DetailTab = 'tasks' | 'style' | 'ai' | 'settings' | 'history';
+type DetailTab = 'tasks' | 'items' | 'style' | 'ai' | 'settings' | 'history';
 const ALL_TABS: [DetailTab, string][] = [
   ['tasks', 'Tareas'],
+  ['items', 'Inventario'],
   ['style', 'Estilo'],
   ['ai', 'IA'],
   ['settings', 'Ajustes'],
@@ -501,9 +503,10 @@ function renderDetail(w: Worker): string {
   const partner = worker(w.pairWith);
   const role = ROLES[w.role];
   const open = getState().questions.filter((q) => q.workerId === w.id && q.answer === null).length;
+  const toReview = getState().items.filter((i) => i.status === 'review' && i.holder === w.id).length;
   if (detailTab === 'style' && w.role !== 'art') detailTab = 'tasks';
   const pane =
-    detailTab === 'ai' ? aiSection(w) : detailTab === 'settings' ? settingsPane(w) : detailTab === 'history' ? historyPane(w) : detailTab === 'style' ? stylePane(w) : tasksPane(w);
+    detailTab === 'items' ? inventoryPane(w) : detailTab === 'ai' ? aiSection(w) : detailTab === 'settings' ? settingsPane(w) : detailTab === 'history' ? historyPane(w) : detailTab === 'style' ? stylePane(w) : tasksPane(w);
   return `
     <div class="worker" style="--role:${role.color}">
       <header class="worker-head">
@@ -523,7 +526,7 @@ function renderDetail(w: Worker): string {
           ${tabsOf(w).map(
             ([id, label]) =>
               `<button role="tab" type="button" data-detail-tab="${id}" aria-selected="${detailTab === id}" ${detailTab === id ? '' : 'tabindex="-1"'} data-key="dt-${id}">${label}${
-                id === 'tasks' && open ? ` <span class="count is-alert">${open}</span>` : ''
+                id === 'tasks' && open ? ` <span class="count is-alert">${open}</span>` : id === 'items' && toReview ? ` <span class="count">${toReview}</span>` : ''
               }</button>`,
           ).join('')}
         </div>

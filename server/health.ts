@@ -59,9 +59,10 @@ export function computeHealth(): void {
   const st = getState();
   const now = Date.now();
   const brief = st.brief;
-  const known = BRIEF_ASPECTS.reduce((n, a) => n + (brief.aspects[a.id]?.confidence ?? 0), 0);
+  // An aspect told with confidence (0.8 or more) is fully known: nobody states things at 1.0.
+  const known = BRIEF_ASPECTS.reduce((n, a) => n + Math.min(1, (brief.aspects[a.id]?.confidence ?? 0) / 0.8), 0);
   const open = st.questions.filter((q) => q.answer === null).length;
-  const claridad = clamp((known / BRIEF_ASPECTS.length) * 100 - open * 8);
+  const claridad = clamp((known / BRIEF_ASPECTS.length) * 100 - Math.min(30, open * 8));
 
   // After a meeting with you, a clean slate: what happened before it was talked over.
   const lastMeetingEnd = Math.max(st.health.lastMeetingEnd ?? 0, st.meetings[0]?.endedAt ?? 0);

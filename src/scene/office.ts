@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   DOOR_H,
   DOOR_W,
@@ -23,17 +24,26 @@ import {
   type WallLine,
   type WindowStyle,
 } from '../sim/layout';
-import { floorTexture, WALL_PAINT, wallTexture } from './floors';
-import { buildItem, type Assets, type MatFn, type RoomLook } from './furniture';
+import { floorBump, floorTexture, WALL_PAINT, wallTexture } from './floors';
+import { grainSheen } from './wood';
+import { buildItem, setLampGlow, type Assets, type MatFn, type RoomLook } from './furniture';
 import { Materials, type ScenePalette } from './palette';
-import { groundMesh } from './ground';
+import { groundMesh, setRoomOpenings, type Opening as LitOpening } from './ground';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { buildLandscape, type Landscape } from './landscape';
 import { groundShadow, type ShadowBlock } from './textures';
 
 const HALF = WALL_T / 2;
 /** Warm lighting (about 3000 K, like home bulbs) and its full strength. */
 const CEILING_LIGHT = '#ffd8a6';
-const CEILING_INTENSITY = 8;
+const CEILING_INTENSITY = 14;
+/** How bright a lit room's window is, seen from outside (area light, per unit of interior light). */
+const WINDOW_GLOW = 6;
+/** The same through a wall that has dropped out of the way (bigger, so less per square metre). */
+const WALL_GLOW = 1.6;
+let rectLightsReady = false;
+/** The desk lamps' strength in the palette when fully on (see DARK.lampIntensity). */
+const LAMP_FULL = 5;
 const NIGHT_FLOOR = new THREE.Color('#6f675d');
 const DAY_FLOOR = new THREE.Color('#ffffff');
 /** A wall turned away from the camera drops all the way: only the slab's edge stays. */
@@ -52,6 +62,133 @@ function dispose(root: THREE.Object3D): void {
   });
 }
 
+/** Every attribute as plain floats (models come quantized or interleaved), ready to merge. */
+function plainAttributes(g: THREE.BufferGeometry): THREE.BufferGeometry {
+  const out = new THREE.BufferGeometry();
+  if (g.index) out.setIndex(Array.from(g.index.array));
+  for (const [name, a] of Object.entries(g.attributes)) {
+    const n = a.itemSize;
+    const arr = new Float32Array(a.count * n);
+    for (let i = 0; i < a.count; i++) {
+      arr[i * n] = a.getX(i);
+      if (n > 1) arr[i * n + 1] = a.getY(i);
+      if (n > 2) arr[i * n + 2] = a.getZ(i);
+      if (n > 3) arr[i * n + 3] = a.getW(i);
+    }
+    out.setAttribute(name, new THREE.BufferAttribute(arr, n));
+  }
+  return out;
+}
+
+/**
+ * Fold the parts of one object that never move and share a material into a single mesh each:
+ * a shelf of books, desk legs, lamp parts each cost one draw (and one more for the shadows)
+ * instead of dozens. `keep` (the door's hinge) and anything tagged for picking stay as they are.
+ */
+function mergeStatic(root: THREE.Object3D, keep?: THREE.Object3D): void {
+  root.updateMatrixWorld(true);
+  const inv = root.matrixWorld.clone().invert();
+  const groups = new Map<string, THREE.Mesh[]>();
+  const kept = new Set<THREE.Object3D>();
+  keep?.traverse((o) => kept.add(o));
+  root.traverse((o) => {
+    if (!(o instanceof THREE.Mesh) || o instanceof THREE.InstancedMesh || o instanceof THREE.SkinnedMesh) return;
+    if (kept.has(o) || Array.isArray(o.material) || o.morphTargetInfluences || o.userData.calendar) return;
+    // Mirrored parts would come out inside out.
+    if (o.matrixWorld.determinant() < 0) return;
+    const g = o.geometry;
+    const attrs = Object.keys(g.attributes).map((k) => `${k}${g.attributes[k].itemSize}`).sort().join();
+    const key = `${o.material.uuid}|${o.castShadow}|${o.receiveShadow}|${o.renderOrder}|${!!g.index}|${attrs}`;
+    let list = groups.get(key);
+    if (!list) groups.set(key, (list = []));
+    list.push(o);
+  });
+  const m = new THREE.Matrix4();
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    const parts = list.map((o) => plainAttributes(o.geometry).applyMatrix4(m.multiplyMatrices(inv, o.matrixWorld)));
+    const merged = mergeGeometries(parts);
+    for (const p of parts) p.dispose();
+    if (!merged) continue;
+    const first = list[0];
+    const mesh = new THREE.Mesh(merged, first.material);
+    mesh.castShadow = first.castShadow;
+    mesh.receiveShadow = first.receiveShadow;
+    mesh.renderOrder = first.renderOrder;
+    if (first.raycast !== THREE.Mesh.prototype.raycast) mesh.raycast = first.raycast;
+    for (const o of list) {
+      o.removeFromParent();
+      if (!o.userData.shared) o.geometry.dispose();
+    }
+    root.add(mesh);
+  }
+}
+
+/** Soft darkening where a wall meets the floor (strength at the corner; it fades out from it). */
+const WALL_AO = 0.3;
+const wallAOMat = new THREE.MeshBasicMaterial({
+  color: '#000000',
+  vertexColors: true,
+  transparent: true,
+  depthWrite: false,
+  polygonOffset: true,
+  polygonOffsetFactor: -1,
+});
+wallAOMat.userData.shared = true;
+
+/**
+ * The shade in the corner between a wall and the floor, on one side of the wall (`n` points
+ * into the room): a band on the floor and a lower one up the wall, darkest in the corner.
+ * Fake ambient occlusion: the sky and the lamps reach less into a corner. Doorways stay clear.
+ */
+function wallAO(l: WallLine, from: number, to: number, gaps: Opening[], n: P): THREE.Mesh | null {
+  const side = Math.sign(n.x + n.z);
+  const pts: number[] = [];
+  const cols: number[] = [];
+  // Across the band: distance out from the corner and how dark it is there (a quick falloff, then a tail).
+  const floor = [[0, 1], [0.1, 0.45], [0.42, 0]] as const;
+  const wall = [[0, 0.85], [0.08, 0.4], [0.34, 0]] as const;
+  const strip = (a: number, b: number, at: (t: number, d: number) => THREE.Vector3, rows: readonly (readonly [number, number])[]) => {
+    for (let r = 0; r < rows.length - 1; r++) {
+      const [d0, k0] = rows[r];
+      const [d1, k1] = rows[r + 1];
+      const quad = [at(a, d0), at(b, d0), at(b, d1), at(a, d1)];
+      const alpha = [k0, k0, k1, k1];
+      for (const i of [0, 1, 2, 0, 2, 3]) {
+        pts.push(...quad[i].toArray());
+        cols.push(0, 0, 0, alpha[i] * WALL_AO);
+      }
+    }
+  };
+  const face = HALF * side;
+  const onFloor = (t: number, d: number) => {
+    const p = onLine(l, t, face + side * d);
+    return new THREE.Vector3(p.x, 0.004, p.z);
+  };
+  const onWall = (t: number, d: number) => {
+    const p = onLine(l, t, face + side * 0.003);
+    return new THREE.Vector3(p.x, d, p.z);
+  };
+  let cur = from;
+  const doors = gaps.filter((g) => g.y0 < 0.01).sort((p, q) => p.a - q.a);
+  for (const g of [...doors, { a: to, b: to }]) {
+    const b = Math.min(g.a, to);
+    if (b - cur > 0.05) {
+      strip(cur, b, onFloor, floor);
+      strip(cur, b, onWall, wall);
+    }
+    cur = Math.max(cur, g.b);
+  }
+  if (!pts.length) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 4));
+  const mesh = new THREE.Mesh(geo, wallAOMat);
+  mesh.renderOrder = 1;
+  mesh.raycast = () => {};
+  return mesh;
+}
+
 interface Placed {
   /** Rebuild when this changes: kind, desk decor or style, or a model finished loading. */
   sig: string;
@@ -59,7 +196,6 @@ interface Placed {
   door?: THREE.Object3D;
   root: THREE.Group;
   screen?: THREE.MeshStandardMaterial;
-  lamp?: THREE.PointLight;
 }
 
 /** One straight wall, lowered or raised as the camera goes round. */
@@ -164,6 +300,8 @@ function worldMapped(mat: THREE.MeshStandardMaterial, repeat: THREE.Vector2): vo
         #endif`,
       );
   };
+  // Named, so it never shares a program with another material's hook once the clouds wrap it.
+  mat.customProgramCacheKey = () => 'wall-mapped';
 }
 
 /** The rooms (slab, floors, walls, doorways, window light) plus every object in the layout. */
@@ -173,11 +311,12 @@ export class Office {
   readonly items = new THREE.Group();
   private shell = new THREE.Group();
   private light = new THREE.Group();
+  /** The windows' and open walls' area lights: their own group, so rebuilding the sun's patches never takes them. */
+  private glow = new THREE.Group();
   private placed = new Map<string, Placed>();
   private screens = new Map<number, THREE.MeshStandardMaterial>();
-  private assets: Assets = { computer: null, desks: null, chairs: null, plants: null, decor: null, windows: null, sofas: null };
+  private assets: Assets = { computer: null, desks: null, chairs: null, plants: null, decor: null, windows: null, sofas: null, lamps: null };
   private assetsRev = 0;
-  private lampIntensity = 0;
   private shadow: THREE.Mesh | null = null;
   /** The garden round the building (lawn, path, street, trees), when the ground is «Césped». */
   private garden: { group: THREE.Group; land: Landscape | null } | null = null;
@@ -198,6 +337,11 @@ export class Office {
   private rooms: readonly Room[] = [];
   /** Wall objects ride with the wall they hang on. */
   private wallItems = new Map<string, WallRun>();
+  /** Windows in outside walls: where along their run, and how high (they let the rooms' light out). */
+  private panes: { run: WallRun; a: number; b: number; y0: number; y1: number }[] = [];
+  /** Each window's glass as a real light facing out: the rooms' light reaching the ground outside. */
+  private windowGlow: { light: THREE.RectAreaLight; run: WallRun; wall: boolean }[] = [];
+  private windowGlowKey = '';
   private floorMats = new Map<string, { mat: THREE.MeshStandardMaterial; kind: FloorKind }>();
   private wallMats = new Map<WallKind, THREE.MeshStandardMaterial>();
   /** Light shafts, by window: shown only while the window's wall stands. */
@@ -212,7 +356,7 @@ export class Office {
   constructor(mats: Materials, palette: ScenePalette) {
     this.palette = palette;
     this.m = (slot, extra) => mats.get(slot, palette, extra);
-    this.group.add(this.shell, this.light, this.items);
+    this.group.add(this.shell, this.light, this.glow, this.items);
   }
 
   /** A model finished loading: what uses it is rebuilt on the next sync. */
@@ -265,10 +409,12 @@ export class Office {
     const keys: Partial<Record<Item['kind'], string>> = {
       desk: `${look.desk.model}/${look.desk.top}/${look.desk.frame}|${chairKey(look.chairs.desk)}`,
       meeting: chairKey(look.chairs.meeting),
-      window: `${look.windows.model}/${look.windows.frame}`,
+      window: `${look.windows.model}/${look.windows.material}/${look.windows.frame}`,
     };
     this.screens.clear();
     this.wallItems.clear();
+    this.panes = [];
+    const pane = windowModel(look.windows.model);
     for (const item of items) {
       seen.add(item.id);
       const sig = `${item.kind}|${item.decor ?? ''}|${this.assetsRev}|${keys[item.kind] ?? ''}`;
@@ -276,9 +422,9 @@ export class Office {
       if (!p || p.sig !== sig) {
         if (p) this.drop(p);
         const built = buildItem(item, this.m, this.assets, look);
+        mergeStatic(built.obj, built.door);
         built.obj.userData.itemId = item.id;
-        if (built.lamp) built.lamp.intensity = this.lampIntensity;
-        p = { sig, root: built.obj, screen: built.screen, lamp: built.lamp, door: built.door };
+        p = { sig, root: built.obj, screen: built.screen, door: built.door };
         this.placed.set(item.id, p);
         this.items.add(p.root);
       }
@@ -289,12 +435,67 @@ export class Office {
         const wall = wallOf(item, rooms);
         const run = wall && this.runs.find((r) => r.group.userData.wall === wallKey(wall));
         if (run) this.wallItems.set(item.id, run);
+        if (run?.line && item.kind === 'window') {
+          const along = run.line.axis === 'x' ? item.x : item.z;
+          this.panes.push({ run, a: along - pane.width / 2, b: along + pane.width / 2, y0: pane.sill, y1: pane.head });
+        }
       }
     }
     for (const [id, p] of this.placed) {
       if (seen.has(id)) continue;
       this.drop(p);
       this.placed.delete(id);
+    }
+    this.buildWindowGlow();
+  }
+
+  /**
+   * One area light per window, the size of its glass, on the outer face and shining outwards
+   * only: the warm light of the lit rooms falls on the ground outside the way it really would,
+   * strongest right under the window and fading with distance, nothing behind the wall.
+   */
+  private buildWindowGlow(): void {
+    const outer = this.runs.filter((r) => r.line && !r.partition);
+    const key = [...this.panes.map((w) => `${w.a.toFixed(2)},${w.y0},${w.y1},${w.run.group.userData.wall}`), ...outer.map((r) => `${r.group.userData.wall}`)].join('|');
+    if (key === this.windowGlowKey) return;
+    this.windowGlowKey = key;
+    for (const g of this.windowGlow) this.glow.remove(g.light);
+    this.windowGlow = [];
+    if (!this.panes.length && !outer.length) return;
+    if (!rectLightsReady) {
+      RectAreaLightUniformsLib.init();
+      rectLightsReady = true;
+    }
+    for (const w of this.panes) {
+      const l = w.run.line!;
+      const out = { x: -w.run.normal.x, z: -w.run.normal.z };
+      const mid = onLine(l, (w.a + w.b) / 2, -w.run.normal.x * (HALF + 0.02) - w.run.normal.z * (HALF + 0.02));
+      const light = new THREE.RectAreaLight(CEILING_LIGHT, 0, w.b - w.a - 0.1, w.y1 - w.y0 - 0.1);
+      light.position.set(mid.x, (w.y0 + w.y1) / 2, mid.z);
+      light.lookAt(mid.x + out.x, (w.y0 + w.y1) / 2, mid.z + out.z);
+      this.glow.add(light);
+      this.windowGlow.push({ light, run: w.run, wall: false });
+    }
+    // A whole outside wall, for when it drops out of the view's way: then the room is open on
+    // that side, as if the wall weren't there, and its light falls out across the ground.
+    for (const r of outer) {
+      const l = r.line!;
+      const out = { x: -r.normal.x, z: -r.normal.z };
+      const mid = onLine(l, (l.from + l.to) / 2, -r.normal.x * (HALF + 0.02) - r.normal.z * (HALF + 0.02));
+      const light = new THREE.RectAreaLight(CEILING_LIGHT, 0, Math.abs(l.to - l.from), WALL_H);
+      light.position.set(mid.x, WALL_H / 2, mid.z);
+      light.lookAt(mid.x + out.x, WALL_H / 2, mid.z + out.z);
+      this.glow.add(light);
+      this.windowGlow.push({ light, run: r, wall: true });
+    }
+    this.syncWindowGlow();
+  }
+
+  /** As bright as the rooms are lit; dark while its wall is dropped out of the way. */
+  private syncWindowGlow(): void {
+    for (const g of this.windowGlow) {
+      // A window shines while its wall stands; a wall shines as much as it has dropped away.
+      g.light.intensity = g.wall ? this.interior * WALL_GLOW * Math.max(0, 1 - g.run.s) : g.run.s > 0.6 ? this.interior * WINDOW_GLOW : 0;
     }
   }
 
@@ -308,6 +509,8 @@ export class Office {
       }
     }
     this.runs = [];
+    // New walls: the lights tied to the old ones go too.
+    this.windowGlowKey = '';
     this.shafts.clear();
   }
 
@@ -346,7 +549,9 @@ export class Office {
         for (let j = 0; j < nz; j++) {
           const x = r.x0 + (w * (i + 0.5)) / nx;
           const z = r.z0 + (d * (j + 0.5)) / nz;
-          const light = new THREE.PointLight(CEILING_LIGHT, 0, Math.max(w / nx, d / nz) * 1.6 + 3, 1.7);
+          // Steep falloff: bright under the lamp, dim towards the walls, like a real bulb.
+          // Kept to its room: what reaches the ground outside is the soft spill drawn there (see ground.ts).
+          const light = new THREE.PointLight(CEILING_LIGHT, 0, Math.max(w / nx, d / nz) * 1.6 + 3, 2.2);
           light.position.set(x, WALL_H - 0.5, z);
           this.ceiling.push(light);
           this.shell.add(light);
@@ -381,6 +586,8 @@ export class Office {
       const a = ends.continues(w, w.from) ? w.from : w.from - HALF;
       const b = ends.continues(w, w.to) ? w.to : w.to + HALF;
       const pieces = wallPieces(w, a, b, openings, faces, shellMat);
+      const ao = wallAO(w, w.from, w.to, openings, w.inward);
+      if (ao) pieces.push(ao);
       this.addRun(pieces, w.inward, false, wallKey(w), w);
     }
 
@@ -401,7 +608,12 @@ export class Office {
       // Stop at the face of a crossing wall; run right up to an outside wall that carries on in line.
       const from = ends.continues(j, j.from) ? j.from : j.from + HALF;
       const to = ends.continues(j, j.to) ? j.to : j.to - HALF;
-      this.addRun(wallPieces(j, from, to, openings, faces, shellMat), plus, true, '');
+      const pieces = wallPieces(j, from, to, openings, faces, shellMat);
+      for (const n of [plus, minus]) {
+        const ao = wallAO(j, from, to, openings, n);
+        if (ao) pieces.push(ao);
+      }
+      this.addRun(pieces, plus, true, '');
     }
 
     this.doors = doors;
@@ -577,12 +789,17 @@ export class Office {
   private floorMaterial(r: Room): THREE.MeshStandardMaterial {
     let f = this.floorMats.get(r.id);
     if (!f) {
-      f = { mat: new THREE.MeshStandardMaterial({ roughness: 0.85 }), kind: 'plain' };
+      // A satin finish: the lamps and the sky glint softly off it, more off the pale boards.
+      f = { mat: new THREE.MeshStandardMaterial({ roughness: 0.62 }), kind: 'plain' };
+      grainSheen(f.mat);
       f.mat.userData.shared = true;
       this.floorMats.set(r.id, f);
     }
     f.kind = r.floor;
     f.mat.map = floorTexture(r.floor);
+    // Seams, grout and pile catch the light: relief from the floor's own picture.
+    f.mat.bumpMap = floorBump(r.floor) ? f.mat.map : null;
+    f.mat.bumpScale = floorBump(r.floor);
     f.mat.needsUpdate = true;
     this.tintFloor(f);
     return f.mat;
@@ -606,13 +823,14 @@ export class Office {
     const paint = WALL_PAINT[kind];
     mat.color.set(paint ?? '#ffffff');
     // Dim at night like the palette does for the bare walls; with the ceiling lights on they keep their colour.
-    if (this.night) mat.color.multiplyScalar(THREE.MathUtils.lerp(paint ? 0.32 : 0.42, 1, this.interior * 0.92));
+    // Only a little: the lamps light what's near them, the rest stays dark.
+    if (this.night) mat.color.multiplyScalar(THREE.MathUtils.lerp(paint ? 0.32 : 0.42, 1, this.interior * 0.35));
   }
 
   /** Textures carry their own colour; at night they are dimmed like everything else. */
   private tintFloor(f: { mat: THREE.MeshStandardMaterial; kind: FloorKind }): void {
     if (f.kind === 'plain') f.mat.color.set(this.palette.floor);
-    else f.mat.color.set(this.night ? NIGHT_FLOOR.clone().lerp(DAY_FLOOR, this.interior * 0.92) : '#ffffff');
+    else f.mat.color.set(this.night ? NIGHT_FLOOR.clone().lerp(DAY_FLOOR, this.interior * 0.35) : '#ffffff');
   }
 
   /**
@@ -625,6 +843,8 @@ export class Office {
     this.interior = level;
     // Kept in the scene even at zero: switching lights in and out would recompile every material.
     for (const l of this.ceiling) l.intensity = level * CEILING_INTENSITY;
+    // ...and what of it gets out through the windows, onto the ground round the building.
+    this.syncWindowGlow();
     // Lit rooms don't sink into the night as much: floors and walls keep more of their colour.
     if (Math.abs(was - level) > 0.02) {
       for (const f of this.floorMats.values()) this.tintFloor(f);
@@ -632,10 +852,9 @@ export class Office {
     }
   }
 
-  /** Reading lamps on the desks (0 = off). */
+  /** Reading lamps on the desks (0 = off). Whenever the ceiling lights are on, they are too. */
   setDeskLamps(intensity: number): void {
-    this.lampIntensity = intensity;
-    for (const placed of this.placed.values()) if (placed.lamp) placed.lamp.intensity = intensity;
+    setLampGlow(Math.max(intensity / LAMP_FULL, this.interior));
   }
 
   /** Someone is at the entrance: swing the door open (it closes again on its own). */
@@ -669,12 +888,33 @@ export class Office {
       run.group.scale.y = Math.max(run.s, 0.004);
       for (const c of run.group.children) if (c.userData.lintel) c.visible = run.s > 0.9;
     }
+    this.updateOpenings();
     for (const [id, run] of this.wallItems) {
       const root = this.placed.get(id)?.root;
       if (root) root.visible = run.s > 0.6;
       const shaft = this.shafts.get(id);
       if (shaft) shaft.visible = run.s > 0.6;
     }
+    this.syncWindowGlow();
+  }
+
+  /**
+   * Where the rooms' light gets out, for the ground to catch and mirror: each window in a
+   * standing wall, and the open part above an outside wall that has dropped out of the view's way.
+   */
+  private updateOpenings(): void {
+    const out: LitOpening[] = [];
+    const add = (l: WallLine, n: P, a: number, b: number, y0: number, y1: number) => {
+      const p = onLine(l, a, -n.x * HALF - n.z * HALF);
+      const q = onLine(l, b, -n.x * HALF - n.z * HALF);
+      out.push({ x0: p.x, z0: p.z, x1: q.x, z1: q.z, y0, y1, out: { x: -n.x, z: -n.z } });
+    };
+    for (const run of this.runs) {
+      if (!run.line || run.s > 0.98) continue;
+      add(run.line, run.normal, run.line.from, run.line.to, run.s * WALL_H, WALL_H + 0.4);
+    }
+    for (const w of this.panes) if (w.run.s > 0.6) add(w.run.line!, w.run.normal, w.a, w.b, w.y0, Math.min(w.y1, w.run.s * WALL_H));
+    setRoomOpenings(out);
   }
 
   private drop(p: Placed): void {
@@ -689,6 +929,21 @@ export class Office {
 
   rootOf(itemId: string): THREE.Group | undefined {
     return this.placed.get(itemId)?.root;
+  }
+
+  /** How much the ceiling lights are on (0–1). */
+  get interiorLight(): number {
+    return this.interior;
+  }
+
+  /** «Por defecto»: the plain table, which mirrors faintly even when dry. */
+  get plainGround(): boolean {
+    return this.groundKind !== 'grass';
+  }
+
+  /** The ground and the garden on it (what the puddles don't mirror). */
+  get outdoors(): THREE.Object3D | null {
+    return this.garden?.group ?? null;
   }
 
   /** The lawn and everything on it, or nothing («Por defecto»: the model alone on the table). */
@@ -753,8 +1008,6 @@ export class Office {
     for (const f of this.floorMats.values()) this.tintFloor(f);
     for (const [kind, mat] of this.wallMats) this.tintWall(kind, mat);
     if (this.shadow) (this.shadow.material as THREE.MeshBasicMaterial).opacity = night ? 0.45 : 0.32;
-    this.lampIntensity = p.lampIntensity;
-    for (const placed of this.placed.values()) if (placed.lamp) placed.lamp.intensity = p.lampIntensity;
   }
 }
 

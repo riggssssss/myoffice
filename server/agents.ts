@@ -20,7 +20,9 @@ import { LlmError, restingNow, sees, think, type Brain, type ToolSpec } from './
 import { getSettings } from './settings';
 import { PROJECT_TOOL_LABEL, projectBrief, projectTools, useProjectTool } from './project';
 import { canDraw, drawFor, IMAGE_TOOL, visualTask } from './images';
+import { isItemTool, itemsTick, makeItem, useItemTool } from './items';
 import { guideText, isArtTeam, reviewImage, STYLE_TOOLS, styleFor } from './style';
+import { isSocial, LI_TOOLS, useLiTool, voiceFor } from './linkedin';
 import { appTools, canSearch, connectedApps, searchWeb, SEARCH_TOOL, useAppTool } from './composio';
 import { markTainted, setRemember } from './approvals';
 import { mcpLabel, mcpToolsFor, useMcpTool } from './mcpHost';
@@ -268,6 +270,8 @@ function tick(): void {
   deliverAnswers();
   calendarTick();
   hiresTick(publish);
+  // What they make goes up the chain: drafts that are due, and one boss reviewing at a time.
+  itemsTick(publish, ready && now >= throttledUntil);
   // The meeting moves on even while the AI waits (they sit down, you can close it).
   if (st.working || st.meeting) meetingTick(publish, ready && now >= throttledUntil);
   if (st.working && ready && now >= throttledUntil) {
@@ -764,6 +768,7 @@ export function systemFor(w: Worker, audience: Audience = 'team'): string {
     profileText(w, audience),
     w.brief ? `Tu puesto (entrevista): ${w.brief}` : '',
     styleFor(w, w.role === 'art'),
+    voiceFor(w),
     brief ? `Dossier del producto (del propietario):\n${brief}` : 'Producto aún desconocido: no lo supongas ni inventes; dirección lo hablará con el propietario.',
     rulingsText(),
     st.brief.links?.length ? `Webs que os ha pasado el propietario (léelas con leer_web cuando te sirvan): ${st.brief.links.slice(0, 6).map((l) => `${l.url} (${l.title})`).join('; ')}` : '',
@@ -877,6 +882,8 @@ export const TOOL_LABEL: Record<string, string> = {
   buscar_web: 'buscando en internet',
   generar_imagen: 'generando una imagen',
   ver_guia_estilo: 'mirando la guía de estilo',
+  humanizar: 'quitando el tono de IA',
+  guia_linkedin: 'repasando cómo se escribe en LinkedIn',
   revisar_imagen: 'revisando una imagen',
   terminar_conversacion: 'cerrando la conversación',
   pedir_ayuda: 'pidiendo ayuda',
@@ -884,6 +891,9 @@ export const TOOL_LABEL: Record<string, string> = {
   agendar: 'apuntando en el calendario',
   sugerir_contratacion: 'pensando a quién contratar',
   ...PROJECT_TOOL_LABEL,
+  guardar_en_inventario: 'guardando en su inventario',
+  entregar: 'pasando algo a su responsable',
+  ver_inventario: 'mirando su inventario',
   ver_apps: 'mirando tus apps',
   buscar_accion: 'buscando en una app',
   usar_accion: 'usando una app',
@@ -893,6 +903,8 @@ const ROLE_IDS = Object.keys(ROLES) as RoleId[];
 /** Roles you can hire (the fixed four come with the office). */
 const HIRE_ROLES = ROLE_IDS.filter((r) => !isRequired({ role: r }));
 const STATUSES: TaskStatus[] = ['backlog', 'doing', 'blocked', 'review', 'done'];
+/** Doubts about the office's own workings: ids, progress, its tools. */
+const INTERNAL_DOUBT = /\b(id|ids|identificador(es)?)\b[^.?]{0,40}\btareas?\b|\btareas?\b[^.?]{0,40}\b(id|ids|identificador(es)?)\b|actualizar (el )?progreso|\b(ver_tareas|actualizar_tarea|ver_equipo|guardar_en_inventario)\b/i;
 const manages = (w: Worker) => w.role === 'director' || w.role === 'organizer' || reportsOf(getState().workers, w.id).length > 0;
 
 export function toolsFor(w: Worker): ToolSpec[] {
@@ -1003,6 +1015,8 @@ export function toolsFor(w: Worker): ToolSpec[] {
   // The office's look: the art team reads the guide; the art director reviews pieces against it.
   if (isArtTeam(w)) tools.push(STYLE_TOOLS.guide as unknown as ToolSpec);
   if (w.role === 'art') tools.push(STYLE_TOOLS.review as unknown as ToolSpec);
+  // Whoever writes what goes out in your name: the humanizer and the LinkedIn guide.
+  if (isSocial(w) || w.reportsTo === null) tools.push(LI_TOOLS.humanize, LI_TOOLS.guide);
   // Your connected apps (Ajustes → Conectores), once there's at least one.
   tools.push(...appTools());
   // The connectors ticked for this agent (Ajustes → Conectores, their file → IA).
@@ -1196,6 +1210,9 @@ export async function useTool(me: Worker, c: Conversation | null, name: string, 
       }
       case 'buscar_web':
         return await searchWeb(me, args);
+      case 'humanizar':
+      case 'guia_linkedin':
+        return useLiTool(name, args);
       case 'ver_guia_estilo':
         return { note: 'miró la guía de estilo', result: guideText() };
       case 'revisar_imagen':
@@ -1205,7 +1222,14 @@ export async function useTool(me: Worker, c: Conversation | null, name: string, 
         const on = [task(me.taskId), ...ongoingOf(me)].filter((x) => !!x);
         if (!on.some((x) => visualTask(x!.title))) return { note: 'quiso generar una imagen', result: 'NO generada: solo generas imágenes cuando el propietario te lo pide o tu tarea consiste en hacerlas.' };
         const r = await drawFor(args);
-        // Made while working: they land in your chat with them, like any delivery.
+        // Made at their desk: into their inventory, and up the chain to you, reviewed on the way.
+        if (r.files.length && me.deskWork) {
+          const desc = text(args.descripcion, 1200);
+          const it = makeItem(me, { kind: 'image', title: text(args.nombre, 80) || desc.slice(0, 60) || 'Imagen', text: desc ? `Prompt: ${desc}` : '', files: r.files, taskId: me.deskWork.taskId });
+          const up = typeof it === 'string' ? null : it.status === 'review' ? worker(it.holder)?.name : 'el propietario';
+          return { note: r.note, result: `${r.result}${up ? ` Guardadas en tu inventario y pasadas a ${up}.` : ''}` };
+        }
+        // Made in a chat: they land in your chat with them.
         if (r.files.length) {
           const chat = (me.chat ??= { lines: [], pending: false, thinking: null });
           const t = task(me.taskId);
@@ -1225,6 +1249,10 @@ export async function useTool(me: Worker, c: Conversation | null, name: string, 
       case 'pedir_ayuda': {
         const need = text(args.que_necesitas, 400);
         if (!need) return { note: 'quiso pedir ayuda', result: 'Di qué necesitas.' };
+        // How the office works inside (ids, its own tools) is never the owner's to answer.
+        if (INTERNAL_DOUBT.test(need)) {
+          return { note: 'vio que era una duda interna', result: 'Eso no se le pregunta al propietario: los ids de las tareas salen en ver_tareas, el progreso lo pones con actualizar_tarea y lo demás lo ves con tus herramientas o se lo preguntas a tu responsable.' };
+        }
         if (asks.some((x) => x.workerId === me.id) || st.questions.some((q) => q.workerId === me.id && q.answer === null)) {
           return { note: 'ya esperaba una respuesta', result: 'Ya tienes una duda en marcha: espera la respuesta.' };
         }
@@ -1287,6 +1315,7 @@ export async function useTool(me: Worker, c: Conversation | null, name: string, 
         return await useAppTool(me, name, args);
       default: {
         if (name.startsWith('proyecto_')) return await useProjectTool(me, name, args);
+        if (isItemTool(name)) return useItemTool(me, name, args);
         const viaMcp = await useMcpTool(me, name, args);
         if (viaMcp) return viaMcp;
       }

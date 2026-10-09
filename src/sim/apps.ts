@@ -5,6 +5,7 @@
  * how far each app may be used. Reading is free; anything that writes, sends or publishes waits
  * for your approval unless you say otherwise, app by app.
  */
+import type { PostReview } from './linkedin';
 
 /** One app in the catalog. */
 export interface AppInfo {
@@ -65,6 +66,8 @@ export interface AppAction {
   args: Record<string, unknown>;
   status: 'open' | 'done' | 'rejected' | 'failed';
   result: string | null;
+  /** A LinkedIn post: how human it sounds, after the humanizer. */
+  review?: PostReview;
 }
 
 /** Valid app slug (Composio's toolkit ids are lowercase words, digits, dashes and underscores). */

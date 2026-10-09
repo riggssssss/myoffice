@@ -24,6 +24,7 @@ let waitUntil = 0;
 export function meetingTick(publish: () => void, canThink: boolean): void {
   const st = getState();
   const m = st.meeting;
+  if (!m && settleDue && !busy && canThink && Date.now() >= waitUntil) void settleQuestions(publish);
   if (!m || busy || Date.now() < waitUntil) return;
   if (!st.working) {
     // Everyone went home: whatever was said stays in the minutes.
@@ -761,11 +762,82 @@ async function close(m: Meeting, publish: () => void, canThink: boolean): Promis
   st.meetings.length = Math.min(st.meetings.length, KEEP);
   st.health.lastMeetingEnd = m.endedAt;
   st.meeting = null;
+  // What the meeting answered shouldn't stay open as a doubt.
+  settleDue = true;
   log('meeting', m.summary ? `Acta de la reunión: ${m.summary}` : 'Termina la reunión contigo', lead?.id ?? null);
   refreshActivities();
   busy = false;
   notify('change');
   publish();
+}
+
+/** Due after each meeting, and once on start: open doubts are checked against what's known. */
+let settleDue = true;
+
+/**
+ * Doubts the team left for you that the meeting, your decisions or the dossier already answer
+ * (or that were never yours to answer: ids, how their tools work) get closed by the head with
+ * that answer, so they neither wait on you nor count against the project's clarity. What only
+ * you can answer stays open.
+ */
+async function settleQuestions(publish: () => void): Promise<void> {
+  settleDue = false;
+  const st = getState();
+  const open = st.questions.filter((q) => q.answer === null);
+  const head = st.workers.find((w) => w.reportsTo === null);
+  if (!open.length || !head) return;
+  const brain = brainOf(head);
+  if (typeof brain === 'string') return;
+  busy = true;
+  const last = st.meetings[0];
+  const heard = last ? last.lines.filter((l) => l.speaker === 'owner').map((l) => `- ${l.text}`).join('\n').slice(-4000) : '';
+  try {
+    const out = await think(
+      brain,
+      systemFor(head),
+      [
+        'Dudas del equipo que siguen abiertas, esperando al propietario:',
+        open.map((q) => `[${q.id}] ${worker(q.workerId)?.name ?? '¿?'}: ${q.text}`).join('\n'),
+        '',
+        'Lo que ya sabemos:',
+        briefText() || '(dossier vacío)',
+        rulingsText(),
+        last?.summary ? `Acta de la última reunión: ${last.summary}` : '',
+        heard ? `Lo que dijo el propietario en ella:\n${heard}` : '',
+        '',
+        'Para cada duda: si lo de arriba ya la responde, escribe la respuesta con esos datos (1-2 frases, sin inventar nada).',
+        'Si es interna del equipo y el propietario no tiene por qué saberla (ids de tareas, cómo usar sus herramientas, dónde está algo del sistema), respóndela tú: cómo lo resuelven ellos.',
+        'Si de verdad solo el propietario puede responderla, NO la pongas.',
+        'Responde SOLO JSON: {"respondidas": [{"id": "p12", "respuesta": "…"}]}',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      [],
+      async () => '',
+      { maxRounds: 0, maxTokens: 1200 + 250 * open.length },
+    );
+    spend(out.tokens);
+    const list = parseJson(out.text)?.respondidas;
+    for (const x of Array.isArray(list) ? (list as Record<string, unknown>[]) : []) {
+      const q = open.find((o) => o.id === x?.id && o.answer === null);
+      const text = typeof x?.respuesta === 'string' ? x.respuesta.trim().slice(0, 600) : '';
+      if (!q || text.length < 3) continue;
+      q.answer = `(${head.name}, con lo ya hablado con el propietario) ${text}`;
+      q.answeredAt = Date.now();
+      for (const msg of st.inbox) if (msg.action?.type === 'answer' && msg.action.questionId === q.id) Object.assign(msg, { closed: true, read: true });
+      log('question', `${head.name} responde a ${worker(q.workerId)?.name ?? 'alguien'} con lo ya hablado: «${text.length > 80 ? `${text.slice(0, 80)}…` : text}»`, head.id);
+    }
+  } catch (e) {
+    if (e instanceof LlmError && e.status === 429) {
+      settleDue = true;
+      waitForProvider(e);
+      waitUntil = Date.now() + (e.retryAfterMs || 20_000);
+    } else console.error(`[dudas] ${redact(e instanceof Error ? e.message : String(e))}`);
+  } finally {
+    busy = false;
+    notify('change');
+    publish();
+  }
 }
 
 function noteGap(id: BriefAspect, label: string, text: string): { result: string; note: string } {

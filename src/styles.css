@@ -7161,12 +7161,13 @@ body.chat-open .toasts {
   gap: 6px;
 }
 
-.swatches {
+.guide-swatches {
   display: inline-flex;
   gap: 3px;
 }
 
-.swatch {
+/* The style guide's palette: small squares, its own names so they never touch the editor's colour buttons. */
+.guide-swatch {
   width: 14px;
   height: 14px;
   border-radius: 4px;
@@ -7174,7 +7175,7 @@ body.chat-open .toasts {
   box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12);
 }
 
-.swatches.is-lg .swatch {
+.guide-swatches.is-lg .guide-swatch {
   width: 26px;
   height: 26px;
   border-radius: 6px;
@@ -7566,4 +7567,720 @@ button.work-head:hover .work-title {
   .work-body {
     animation: none;
   }
+}
+
+/* LinkedIn: a post waiting for your yes, and its score */
+.post-review {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.post-score {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  justify-self: start;
+  margin: 0;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.post-score b {
+  font-size: 14px;
+}
+
+.post-score.is-ok {
+  background: color-mix(in srgb, var(--ok) 14%, var(--surface));
+  color: var(--ok);
+}
+
+.post-score.is-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.post-score.is-bad {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.post-score .meta {
+  color: inherit;
+  opacity: 0.75;
+}
+
+.post-text {
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  font-size: 13.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.post-review .meta {
+  margin: 0;
+}
+
+/* Ajustes → Conectores → LinkedIn */
+.li-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.li-panel label .meta {
+  margin-left: 6px;
+  font-weight: 400;
+}
+
+.li-panel textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.li-from-posts {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: var(--r);
+  background: var(--surface-2);
+}
+
+.li-from-posts .btn {
+  justify-self: start;
+}
+
+.li-plan {
+  display: grid;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.li-plan .section-note {
+  margin: 0;
+}
+
+.li-days {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.li-days legend {
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.li-day-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.li-day input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.li-day span {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 150ms var(--ease-out), border-color 150ms var(--ease-out);
+}
+
+.li-day input:checked + span {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.li-day input:focus-visible + span {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.li-sub {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.li-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+
+.li-slots {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.li-slot {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.li-slot:last-child {
+  border-bottom: 0;
+}
+
+.li-when {
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  text-transform: capitalize;
+}
+
+.li-what {
+  display: grid;
+  gap: 2px;
+}
+
+.li-angle {
+  color: var(--ink-2);
+  line-height: 1.45;
+}
+
+.li-status {
+  color: var(--ink-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.li-slot.is-esperando .li-status {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.li-slot.is-publicado .li-status {
+  color: var(--ok);
+}
+
+.li-slot.is-fallo .li-status {
+  color: var(--danger);
+}
+
+.li-slot.is-descartado {
+  opacity: 0.6;
+}
+
+.li-engage,
+.li-test {
+  font-size: 13px;
+}
+
+.li-engage summary,
+.li-test summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font-weight: 500;
+}
+
+.li-engage ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  line-height: 1.6;
+}
+
+.li-test[open] {
+  display: grid;
+  gap: 10px;
+}
+
+.li-test > .btn {
+  justify-self: start;
+}
+
+.li-result {
+  display: grid;
+  gap: 10px;
+}
+
+.li-checks {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.li-checks li {
+  display: grid;
+  grid-template-columns: 90px minmax(60px, 140px) 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.li-checks .bar {
+  display: block;
+}
+
+.li-checks .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.li-flags-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.li-flags {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.45;
+}
+
+@media (max-width: 560px) {
+  .li-slot,
+  .li-checks li {
+    grid-template-columns: 1fr;
+  }
+}
+
+.post-edit {
+  width: 100%;
+  min-height: 140px;
+  max-height: 420px;
+  resize: vertical;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--ink);
+}
+
+.post-edit:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+.post-gap {
+  flex-basis: 100%;
+}
+
+/* ---------------------------------------------------------------- inventories and deliveries */
+
+/* Five tabs in the panel: a little tighter, and they scroll rather than break if it's narrow. */
+.tabs {
+  gap: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tabs [role='tab'] {
+  flex: none;
+  padding-inline: 8px;
+}
+
+.tabs [role='tab'][aria-selected='true']::after {
+  left: 8px;
+  right: 8px;
+}
+
+.items {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.items-filter {
+  margin-top: 14px;
+}
+
+.items-way {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.items-way svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.items-empty {
+  margin-top: 18px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.items-archived {
+  margin-top: 16px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.item {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+
+.item.is-new {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+.item.is-gone {
+  background: none;
+  opacity: 0.7;
+}
+
+.item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.item-head .meta {
+  margin-left: auto;
+}
+
+.item-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.item-new,
+.item-where {
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--surface-3);
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.item-new {
+  background: var(--ink);
+  color: var(--primary-ink);
+}
+
+.item-where.is-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.item-where.is-bad {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.item-where.is-ok {
+  color: var(--ok);
+}
+
+.item-star {
+  color: var(--ink-3);
+}
+
+.item-star.is-on {
+  color: var(--warn);
+}
+
+.item-star.is-on svg {
+  fill: currentColor;
+}
+
+.item-title {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.item-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.item-text.is-mono {
+  font: 12px/1.5 var(--mono);
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.item-text.is-clamped {
+  max-height: 9em;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 60%, transparent);
+}
+
+.item-more {
+  justify-self: start;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.item-thumbs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 6px;
+  align-items: center;
+}
+
+.item-thumb {
+  display: block;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.item-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.item-url,
+.item-file {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.item-url span,
+.item-file span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-url:hover,
+.item-file:hover {
+  border-color: var(--line-strong);
+}
+
+.item-path {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.item-path .talk-dot {
+  flex: none;
+}
+
+.item-path em {
+  font-style: normal;
+  color: var(--ok);
+}
+
+.item-trail summary {
+  font-size: 12px;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.item-trail ol {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item-trail li {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+
+.item-trail li .meta {
+  display: inline;
+}
+
+.item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.item-ask {
+  display: grid;
+  gap: 8px;
+}
+
+.item-ask textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------------------- sofa colour (Ajustes) */
+
+.sofa-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.sofa-swatch,
+.sofa-custom {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.sofa-swatch {
+  background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--swatch) 70%, #fff), var(--swatch) 60%);
+}
+
+.sofa-swatch[aria-pressed='true'] {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.sofa-custom {
+  position: relative;
+  overflow: hidden;
+  background: conic-gradient(#d9534f, #f0ad4e, #e8e35b, #5cb85c, #5bc0de, #6f5bd9, #d95bb5, #d9534f);
+}
+
+.sofa-custom input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- clock: pick the time of day */
+
+button.clock {
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.clock:hover .clock-time {
+  color: var(--ink-2);
+}
+
+/* A picked time (not the real one): a small dot so it's never mistaken for the real clock. */
+button.clock.is-chosen .clock-time::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  vertical-align: 4px;
+}
+
+.clock-menu {
+  width: min(300px, calc(100vw - 24px));
+}
+
+.clock-slider {
+  display: grid;
+  gap: 6px;
+  padding: 10px 10px 8px;
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+
+.clock-slider input {
+  width: 100%;
+  accent-color: var(--ink);
 }

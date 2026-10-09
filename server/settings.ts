@@ -52,6 +52,7 @@ export function patchSettings(patch: unknown): Settings {
     };
   }
   if (num(p.north, -360, 360)) next.north = p.north;
+  if (typeof p.sofaColor === 'string' && /^#[0-9a-f]{6}$/i.test(p.sofaColor)) next.sofaColor = p.sofaColor.toLowerCase();
   if (p.ai) {
     let model = typeof p.ai.model === 'string' ? p.ai.model.trim() : null;
     if (isProvider(p.ai.provider) && p.ai.provider !== next.ai.provider) {

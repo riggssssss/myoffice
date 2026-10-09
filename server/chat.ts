@@ -7,9 +7,11 @@ import { assignTask, getState, inMeeting, notify, requestWork, worker } from '..
 import { ROLES } from '../src/sim/seed';
 import type { ChatActivity, ChatFile, ChatImage, ChatLine, ToolUse, Worker } from '../src/sim/types';
 import { appName, appsReady, connectedApps } from './composio';
+import { CONNECT_APPS } from './composioConnect';
 import { addTask, askToTalk, brainOf, eyesFor, forOwner, recentNotes, spend, systemFor, tidy, toolLabel, toolsFor, useTool, waitForProvider } from './agents';
 import { fileText, imageData, makeFile } from './files';
 import { noteFromChat, toneOf } from './meetings';
+import { keepSent } from './items';
 import { asksForPicture, drawFor } from './images';
 import { LlmError, think, type Brain, type Picture, type ToolSpec } from './llm';
 import { listMcp } from './mcp';
@@ -154,6 +156,34 @@ function picturesIn(result: string, app: string | null): ChatImage[] {
 const sizeOf = (n: number) => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
 const filesSaid = (files: ChatFile[] | undefined) => (files?.length ? ` [adjuntó: ${files.map((f) => `${f.name} (${f.kind === 'image' ? 'imagen' : 'documento'}, ${sizeOf(f.size)})`).join('; ')}]` : '');
 
+const plainWords = (t: string) =>
+  t
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .split(/[^a-z0-9ñ]+/)
+    .filter((x) => x.length > 2);
+
+/** Apps you name in a message («entra en mi Pinterest»), connected or not. */
+function appsNamed(text: string): { slug: string; name: string }[] {
+  const words = ` ${plainWords(text).join(' ')} `;
+  return CONNECT_APPS.filter((a) => words.includes(` ${plainWords(a.name).join(' ')} `)).slice(0, 3);
+}
+
+/** «A ver», «oye», «venga»…: what's around an order, not the order. */
+const FILLER = new Set(['ver', 'oye', 'venga', 'pues', 'bueno', 'vale', 'porfa', 'favor', 'que']);
+
+/** Their reply is mostly your own message said back (your «mi Pinterest» in their mouth). */
+function echoes(reply: string, yours: string): boolean {
+  const names = new Set(getState().workers.flatMap((w) => plainWords(w.name)));
+  const a = new Set(plainWords(reply));
+  const b = plainWords(yours).filter((x) => !FILLER.has(x) && !names.has(x));
+  if (b.length < 2) return false;
+  const shared = b.filter((x) => a.has(x)).length;
+  // Most of what you said is there, and your «mi»/«me» came back as theirs.
+  return shared / b.length >= 0.7 && /(?<![\p{L}])(mi|mis|me)(?![\p{L}])/iu.test(reply) && /(?<![\p{L}])(mi|mis|me)(?![\p{L}])/iu.test(yours);
+}
+
 /** Your messages since their last answer: what they haven't seen yet. */
 function unanswered(lines: ChatLine[]): ChatLine[] {
   const out: ChatLine[] = [];
@@ -187,7 +217,7 @@ async function answer(w: Worker, publish: () => void): Promise<void> {
   // Whoever organises or leads hands work out themselves; everyone else passes it on.
   const hands = w.role === 'organizer' || w.role === 'director';
   const paused = getState().tasks.filter((t) => t.assigneeId === w.id && t.status === 'blocked');
-  const own = ['ver_tareas', 'ver_equipo', 'recordar', 'actualizar_tarea', 'leer_web', 'buscar_web', 'generar_imagen', 'ver_guia_estilo', 'revisar_imagen', 'ver_apps', 'buscar_accion', 'usar_accion', ...(hands ? ['crear_tarea', 'asignar_tarea'] : [])];
+  const own = ['ver_tareas', 'ver_equipo', 'recordar', 'actualizar_tarea', 'leer_web', 'buscar_web', 'generar_imagen', 'ver_guia_estilo', 'revisar_imagen', 'humanizar', 'guia_linkedin', 'ver_apps', 'buscar_accion', 'usar_accion', ...(hands ? ['crear_tarea', 'asignar_tarea'] : [])];
   await appsReady();
   // Your apps, and the connectors ticked for them: they can look things up for you right here.
   const kit = [...toolsFor(w).filter((t) => own.includes(t.name) || t.name.startsWith('mcp_')), ...CHAT_TOOLS.filter((t) => t.name !== 'pasar_a_organizacion' || (!hands && organizer))];
@@ -252,6 +282,12 @@ async function answer(w: Worker, publish: () => void): Promise<void> {
         : 'De su último mensaje no has apuntado nada nuevo: si te pregunta si lo has apuntado, sé sincero.'
       : '',
     recentNotes(w).length ? `Lo último que sabes de hablar con el equipo (tus notas):\n${recentNotes(w).map((n) => `- ${n.slice(0, 300)}`).join('\n')}` : '',
+    ...appsNamed(turn).map((a) =>
+      connectedApps().includes(a.slug)
+        ? `${a.name} SÍ está conectada: si te pide entrar o mirar algo ahí, hazlo ya con buscar_accion → usar_accion y contéstale con lo que veas.`
+        : `${a.name} NO está conectada: no puedes entrar ni ver nada de ella. Díselo claro en una frase y ofrécele las dos salidas: conectarla en Ajustes → Conectores, o pasarte el enlace de un tablero o página pública (lo lees con leer_web). No inventes carpetas, tableros ni contenidos.`,
+    ),
+    'Nunca le des órdenes al propietario ni le repitas su mensaje como si fuera tuyo: lo que te pide lo haces tú, o le dices que no puedes y por qué.',
     'Si te pide que hables con un compañero, hablar_con y dile que vas. Si te mete prisa o pregunta por qué no avanzas, no le vuelvas a pedir lo mismo: di qué haces ya con lo que tienes (dossier, decisiones, tus notas) y qué te falta exactamente, una sola vez.',
     tone === 'complaint'
       ? 'Se queja o te corrige, y tiene razón. «Perdona», quédate con su versión y contesta exactamente lo que te pregunta. Sin justificarte, sin repetir lo que dijiste antes y sin preguntas.'
@@ -267,6 +303,9 @@ async function answer(w: Worker, publish: () => void): Promise<void> {
     'Si quiere ver, que le pases o que le mandes imágenes o un documento: consíguelo con tus herramientas y envíalo con enviar (las imágenes salen en el chat). Nunca digas que no puedes enviar imágenes o archivos.',
     kit.some((t) => t.name === 'generar_imagen')
       ? 'generar_imagen solo cuando te pida expresamente una imagen y diga qué quiere («hazme un mockup de taza blanca»). Si solo pregunta si puedes, o no dice qué, contesta con palabras y pregúntale qué quiere: no generes nada.'
+      : '',
+    kit.some((t) => t.name === 'humanizar')
+      ? 'Si te pide un post o un texto para publicar en su nombre: escríbelo con guia_linkedin (post y ganchos: dale tres ganchos a elegir y el post entero con el mejor), pásalo por humanizar, reescribe lo que marque y enséñaselo limpio. Publícalo solo si te lo pide (le llegará para aprobarlo). Si te pega su perfil, un post ajeno o un vídeo/documento, guia_linkedin con perfil, comentarios o reutilizar.'
       : '',
     'Describe solo lo que te haya devuelto una herramienta en esta respuesta o lo que ya esté en la conversación: nada de cifras ni contenidos supuestos. Nunca digas que has mirado o que no ves algo si no lo has consultado con una herramienta.',
     'Si no entiendes lo que pide, una pregunta corta. Nada inventado.',
@@ -295,11 +334,15 @@ async function answer(w: Worker, publish: () => void): Promise<void> {
     }, { maxRounds: 7, maxTokens: 1600, pictures });
     spend(out.tokens);
     let said = forOwner(tidy(out.text, w.name));
+    // «Entra en mi Pinterest» said back to you: the model took your words for its own. One more go.
+    const echoed = !!said && echoes(said, turn);
+    if (echoed) said = '';
     // Some models come back with nothing to say (all thinking, no words): ask once more for the
     // answer itself, with what the tools gave; never leave you without a reply.
     if (!said && !sent.images.length && !sent.files.length) {
       say({ label: 'Escribiendo' });
-      const again = await think(brains, systemFor(w, 'owner'), `${prompt}\n\n${used.length ? `Ya has hecho: ${used.map((u) => u.note).join('; ')}.\n` : ''}Contesta ya, en texto, a su último mensaje.`, [], async () => '', {
+      const fix = echoed ? 'Tu respuesta repetía su mensaje como si lo dijeras tú. Te lo pide A TI: contesta en primera persona qué haces tú, o por qué no puedes.\n' : '';
+      const again = await think(brains, systemFor(w, 'owner'), `${prompt}\n\n${used.length ? `Ya has hecho: ${used.map((u) => u.note).join('; ')}.\n` : ''}${fix}Contesta ya, en texto, a su último mensaje.`, [], async () => '', {
         maxRounds: 0,
         maxTokens: 900,
       }).catch(() => null);
@@ -316,6 +359,8 @@ async function answer(w: Worker, publish: () => void): Promise<void> {
         ...(sent.images.length ? { images: sent.images } : {}),
         ...(sent.files.length ? { files: sent.files } : {}),
       });
+    // What they sent you also stays in Entregas, with everything else they've handed you.
+    if (sent.images.length || sent.files.length) keepSent(w, sent.files, sent.images, text);
     if (chat.lines.length > KEEP) chat.lines.splice(0, chat.lines.length - KEEP);
     chat.pending = false;
   } catch (e) {

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { WALL_T } from '../sim/layout';
 import { noiseTexture } from './clouds';
+import { mirrorUniforms } from './puddleMirror';
 
 /**
  * The ground round the building: scanned materials (colour, relief and occlusion) so the low
@@ -37,14 +38,22 @@ const DEFS: Record<Surface, GroundDef> = {
   asphalt: { photo: 'concrete', tint: '#77787a', tile: 5, normal: 1.2, roughness: 0.9, patches: 0.1, soak: 0.45, relief: 0.15 },
   // «Por defecto»: the table the model stands on, the backdrop's own colour. No grass, but the
   // weather still shows on it: the clouds' shade, the wet, the puddles.
-  plain: { tile: 4, normal: 0, roughness: 0.9, patches: 0, soak: 0.3, relief: 0 },
+  plain: { tile: 4, normal: 0, roughness: 1, patches: 0, soak: 0.3, relief: 0 },
 };
 
 /** The table's colour follows the backdrop (day, dusk, night), a little darker as it's lit. */
 const plainColor = new THREE.Color('#d8d8d8');
 const PLAIN_SHADE = 0.55;
+/** Lowest reflectance of the plain table (linear): a mid-dark grey, like real ground. */
+const PLAIN_MIN = 0.16;
 export function setPlainColor(backdrop: THREE.Color): void {
-  plainColor.copy(backdrop).multiplyScalar(PLAIN_SHADE);
+  // Mostly grey, only a hint of the backdrop's hue: the night's blue comes from the light on it,
+  // so the rooms' warm light falling out of the windows shows warm, as it would on real ground.
+  // Never darker than a real grey surface (about 16 % reflectance): at night it looks dark because
+  // little light reaches it, not because it's black, so the rooms' light falling out shows on it.
+  const l = backdrop.r * 0.2126 + backdrop.g * 0.7152 + backdrop.b * 0.0722;
+  const k = Math.max(l * PLAIN_SHADE, PLAIN_MIN);
+  plainColor.setRGB(1, 1, 1).lerp(l > 0 ? backdrop.clone().multiplyScalar(1 / Math.max(l, 1e-4)) : plainColor, 0.15).multiplyScalar(k);
 }
 /** Metres out from the walls that stay solid, then a long, gentle fade until FADE. */
 const SOLID = 12;
@@ -53,6 +62,51 @@ export const FADE = 44;
 const box = new THREE.Vector4();
 /** x: how wet (0–1); y: how far puddles have spread (0–1); z: time (s); w: rain falling now (0–1). */
 const wet = { value: new THREE.Vector4() };
+
+/**
+ * The rooms' own light getting out: rgb its colour, w how strong (0 with the lights off). It
+ * leaves only through openings (windows, and walls dropped out of the view's way), each a lit
+ * upright rectangle; see setRoomOpenings.
+ */
+const glow = { value: new THREE.Vector4(1, 0.85, 0.65, 0) };
+export function setGroundGlow(color: THREE.Color, k: number): void {
+  glow.value.set(color.r, color.g, color.b, k);
+}
+
+/** A lit opening in an outside wall: from (x0, z0) to (x1, z1) along it, y0 up to y1, `out` the way it faces. */
+export interface Opening {
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+  y0: number;
+  y1: number;
+  out: { x: number; z: number };
+}
+const MAX_OPENINGS = 24;
+const openA = { value: Array.from({ length: MAX_OPENINGS }, () => new THREE.Vector4()) };
+const openB = { value: Array.from({ length: MAX_OPENINGS }, () => new THREE.Vector4()) };
+const openN = { value: 0 };
+export function setRoomOpenings(list: readonly Opening[]): void {
+  const n = Math.min(list.length, MAX_OPENINGS);
+  for (let i = 0; i < n; i++) {
+    const o = list[i];
+    openA.value[i].set(o.x0, o.z0, o.x1, o.z1);
+    // Which side of the run (its left, seen from x0 → x1) is outside.
+    const left = -(o.z1 - o.z0) * o.out.x + (o.x1 - o.x0) * o.out.z;
+    openB.value[i].set(o.y0, o.y1, 0, Math.sign(left) || 1);
+  }
+  openN.value = n;
+}
+
+/** Height of the ground plane: just under the level people walk on outside (the slab's underside), below the painted shadow. */
+export const GROUND_Y = -WALL_T - 0.012;
+
+/** How strong the plain table's dry sheen is (0–1): faint under a bright sun, full under grey skies and at night. */
+const sheenK = { value: 1 };
+export function setGroundSheen(k: number): void {
+  sheenK.value = k;
+}
 
 export function setGroundWeather(wetness: number, puddles: number, time: number, rain: number): void {
   wet.value.set(wetness, puddles, time, rain);
@@ -68,7 +122,11 @@ float lowAt( vec2 p ) {
 }
 `;
 
-/** Rings spreading from raindrops landing in a puddle: the slope they give the water (xz). */
+/**
+ * Rings spreading from raindrops landing in a puddle: the slope they give the water (xz). Each
+ * ring is one smooth swell (the slope of a soft bump), a few centimetres wide: finer ripples are
+ * smaller than a pixel from up here and only sparkle. Zoomed far out they fade away for the same reason.
+ */
 const RIPPLES = /* glsl */ `
 vec2 ripples( vec2 p, float t ) {
   vec2 g = vec2( 0.0 );
@@ -80,12 +138,23 @@ vec2 ripples( vec2 p, float t ) {
     float life = fract( t * ( 0.7 + 0.25 * fk ) + h.x );
     vec2 d = fract( q ) - 0.5 - ( h - 0.5 ) * 0.5;
     float r = length( d );
-    float ring = exp( -pow( ( r - life * 0.45 ) * 22.0, 2.0 ) ) * ( 1.0 - life );
-    g += d / max( r, 1e-3 ) * ring * sin( ( r - life * 0.45 ) * 60.0 );
+    float x = ( r - life * 0.45 ) * 12.0;
+    float ring = -x * exp( -x * x ) * ( 1.0 - life );
+    g += d / max( r, 1e-3 ) * ring;
   }
-  return g;
+  return g * ( 1.0 - smoothstep( 0.012, 0.03, length( fwidth( p ) ) ) );
 }
 `;
+/**
+ * The ceiling lights are inside, behind walls (point lights cast no shadows here): outdoors they
+ * would only shine through the walls, as hot spots mirrored in the puddles. Outside materials
+ * skip them, which also spares every leaf and blade of the garden their cost. (A macro, not the
+ * light count: three writes the counts into the source after this.)
+ */
+const NO_ROOM_LIGHTS = `#define getPointLightInfo( l, p, d ) d.color = vec3( 0.0 ); d.direction = vec3( 0.0, 1.0, 0.0 ); d.visible = false
+#include <lights_fragment_begin>
+#undef getPointLightInfo`;
+
 const materials = new Map<Surface, THREE.MeshStandardMaterial>();
 
 function map(kind: NonNullable<GroundDef['photo']>, file: string, srgb = false): THREE.Texture {
@@ -119,12 +188,18 @@ export function surfaceMaterial(kind: Surface): THREE.MeshStandardMaterial {
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uBox = { value: box };
     sh.uniforms.uWet = wet;
+    sh.uniforms.uGlow = glow;
+    sh.uniforms.uOpenA = openA;
+    sh.uniforms.uOpenB = openB;
+    sh.uniforms.uOpenN = openN;
+    sh.uniforms.uSheen = sheenK;
+    Object.assign(sh.uniforms, mirrorUniforms);
     sh.uniforms.uNoise = { value: noiseTexture };
     sh.vertexShader = `varying vec2 vGround;\n${sh.vertexShader.replace(
       '#include <project_vertex>',
       '#include <project_vertex>\n vGround = (modelMatrix * vec4(transformed, 1.0)).xz;',
     )}`;
-    sh.fragmentShader = `uniform vec4 uBox;\nuniform vec4 uWet;\nuniform sampler2D uNoise;\nvarying vec2 vGround;\n${LOW}\n${RIPPLES}\n${sh.fragmentShader
+    sh.fragmentShader = `uniform vec4 uBox;\nuniform vec4 uWet;\nuniform vec4 uGlow;\nuniform vec4 uOpenA[${MAX_OPENINGS}];\nuniform vec4 uOpenB[${MAX_OPENINGS}];\nuniform int uOpenN;\nuniform float uSheen;\nuniform sampler2D uMirror;\nuniform sampler2D uMirrorHeight;\nuniform mat4 uMirrorMatrix;\nuniform float uMirrorOn;\nuniform sampler2D uNoise;\nvarying vec2 vGround;\n${LOW}\n${RIPPLES}\n${sh.fragmentShader
       .replace(
         '#include <map_fragment>',
         `#include <map_fragment>
@@ -160,15 +235,79 @@ export function surfaceMaterial(kind: Surface): THREE.MeshStandardMaterial {
         `#include <roughnessmap_fragment>
          // Wet ground has a sheen; a puddle is a mirror.
          roughnessFactor = mix( roughnessFactor, 0.42, damp * 0.8 );
-         roughnessFactor = mix( roughnessFactor, 0.03, puddle );`,
+         roughnessFactor = mix( roughnessFactor, 0.07, puddle );`,
       )
       .replace(
         '#include <lights_fragment_end>',
         `#include <lights_fragment_end>
          // What a puddle mirrors is the sky's brightness, not its blue: a grey sheen over the ground you see through it.
          float skyLum = dot( reflectedLight.indirectSpecular, vec3( 0.2126, 0.7152, 0.0722 ) );
-         reflectedLight.indirectSpecular = mix( reflectedLight.indirectSpecular, vec3( skyLum ), puddle * 0.8 ) * ( 1.0 + 0.6 * puddle );`,
+         reflectedLight.indirectSpecular = mix( reflectedLight.indirectSpecular, vec3( skyLum ), puddle * 0.8 ) * ( 1.0 + 0.6 * puddle );
+         // The puddles mirror the office (see puddleMirror.ts), broken up by the rings; nothing
+         // where there's no water.
+         // The plain table has a faint satin sheen of its own, wet or dry.
+         float sheen = ${kind === 'plain' ? '1.0' : '0.0'} * ( 1.0 - puddle ) * uSheen;
+         // Mirror texels per metre of ground here (more zoomed in, fewer zoomed out), so the blur
+         // is a real size on the ground and the image keeps its detail at any zoom. Worked out
+         // before the branch: derivatives need every pixel around to run them.
+         vec4 mp = uMirrorMatrix * vec4( vGround.x, ${GROUND_Y.toFixed(3)}, vGround.y, 1.0 );
+         vec2 muv0 = mp.xy / mp.w;
+         float texPerM = length( fwidth( muv0 ) ) / max( length( fwidth( vGround ) ), 1e-4 ) * float( textureSize( uMirror, 0 ).x );
+         if ( uMirrorOn > 0.5 && puddle + sheen > 0.01 ) {
+           vec2 muv = muv0 + rip * 0.05;
+           // How high above the water the mirrored point is: right at the water it's sharp, the
+           // higher up the blurrier (the ripples and the water's own murk spread it out more).
+           // How wide the blur is on the ground, in metres: still water keeps what stands in it
+           // nearly sharp, the satin table a little softer, and both spread it more the higher up.
+           float blurBase = mix( 0.05, 0.004, puddle );
+           float blurPerM = mix( 0.18, 0.07, puddle );
+           // The height is the average over the area this pixel will blur, not just under it, so
+           // a pixel just outside an object still knows to blur by that object's height and the
+           // blur spreads out past the outline. First a rough guess at that area (a wide average),
+           // then the average over it. Empty ground in it doesn't count.
+           vec2 hc = textureLod( uMirrorHeight, muv, 4.0 ).rg;
+           float above = hc.g > 0.001 ? hc.r / hc.g : 0.0;
+           float guess = max( ( blurBase + above * blurPerM ) * texPerM, 0.5 );
+           // (The heights are at half the image's resolution: half as many texels across.)
+           hc = textureLod( uMirrorHeight, muv, clamp( log2( guess * 0.5 ), 0.0, 6.0 ) ).rg;
+           above = hc.g > 0.001 ? hc.r / hc.g : 0.0;
+           float blurM = blurBase + above * blurPerM;
+           // A real blur, not one coarse mip level (magnified, that shows as squares): eight
+           // taps over a disc that wide, each reading a level only a fraction of it, the disc
+           // turned per pixel so no pattern shows. Stretched downwards as reflections on wet
+           // ground are, more on the satin table than in still water.
+           float rTex = max( blurM * texPerM, 0.5 );
+           float tapLod = clamp( log2( rTex / 2.5 ), 0.0, 6.0 );
+           vec2 texel = 1.0 / vec2( textureSize( uMirror, 0 ) );
+           vec2 stretch = vec2( 1.0, mix( 1.8, 1.35, puddle ) );
+           float spin = 6.2831853 * fract( 52.9829189 * fract( dot( gl_FragCoord.xy, vec2( 0.06711056, 0.00583715 ) ) ) );
+           vec4 mirrored = vec4( 0.0 );
+           float wsum = 0.0;
+           for ( int i = 0; i < 8; i ++ ) {
+             float fi = float( i );
+             float r = sqrt( ( fi + 0.5 ) / 8.0 );
+             float a = spin + fi * 2.3999632;
+             float wt = 1.0 - 0.6 * r;
+             mirrored += textureLod( uMirror, muv + vec2( cos( a ), sin( a ) ) * stretch * r * rTex * texel, tapLod ) * wt;
+             wsum += wt;
+           }
+           mirrored /= wsum;
+           // Strongest at a slant (Fresnel) and for what's close to the surface: things standing on
+           // it mirror clearly, what's higher up fades out as well as blurring.
+           float facing = saturate( dot( normal, normalize( vViewPosition ) ) );
+           float fres = pow( 1.0 - facing, 5.0 );
+           float near = exp( -above * 0.5 );
+           // The plain table is matte: only a faint hint of what stands on it.
+           float k = puddle * ( 0.6 + 3.0 * fres ) + sheen * ( 0.015 + 0.06 * fres );
+           // What it mirrors takes the place of the sheen there, and of some of the ground seen
+           // through it, as on real water (adding it on top would only wash the ground out).
+           float w = clamp( k * near, 0.0, 0.9 ) * mirrored.a;
+           reflectedLight.indirectSpecular = mix( reflectedLight.indirectSpecular, mirrored.rgb / max( mirrored.a, 1e-3 ), w );
+           reflectedLight.indirectDiffuse *= 1.0 - 0.5 * w;
+           reflectedLight.directDiffuse *= 1.0 - 0.5 * w;
+         }`,
       )
+      .replace('#include <lights_fragment_begin>', NO_ROOM_LIGHTS)
       .replace(
         '#include <normal_fragment_maps>',
         `#include <normal_fragment_maps>
@@ -177,7 +316,7 @@ export function surfaceMaterial(kind: Surface): THREE.MeshStandardMaterial {
          normal = normalize( normal + mat3( viewMatrix ) * vec3( lowSlope.x, 0.0, lowSlope.y ) * ${(2.2 * d.relief).toFixed(2)} );
          normal = normalize( mix( normal, nonPerturbedNormal, puddle * 0.92 ) );
          vec2 rip = ripples( vGround, uWet.z ) * uWet.w * puddle;
-         normal = normalize( normal + mat3( viewMatrix ) * vec3( rip.x, 0.0, rip.y ) * 0.5 );`,
+         normal = normalize( normal + mat3( viewMatrix ) * vec3( rip.x, 0.0, rip.y ) * 0.9 );`,
       )}`;
   };
   m.customProgramCacheKey = () => `ground-${kind}`;
@@ -221,7 +360,8 @@ export function wetten(m: THREE.Material, gloss = 0.2, darken = 0.25): THREE.Mat
         '#include <roughnessmap_fragment>',
         `#include <roughnessmap_fragment>
         roughnessFactor = mix( roughnessFactor, ${gloss.toFixed(2)}, soaked );`,
-      )}`;
+      )
+      .replace('#include <lights_fragment_begin>', NO_ROOM_LIGHTS)}`;
   };
   m.customProgramCacheKey = () => `${key()}|wet${gloss}`;
   m.needsUpdate = true;
@@ -277,8 +417,7 @@ export function groundMesh(bounds: { minX: number; maxX: number; minZ: number; m
   const uv = geo.attributes.uv;
   for (let i = 0; i < uv.count; i++) uv.setXY(i, pos.getX(i) / tile, -pos.getZ(i) / tile);
   const mesh = new THREE.Mesh(geo, surfaceMaterial(surface));
-  // Just under the ground level people walk on (the slab's underside), below the painted shadow.
-  mesh.position.y = -WALL_T - 0.012;
+  mesh.position.y = GROUND_Y;
   mesh.renderOrder = -3;
   mesh.receiveShadow = true;
   return mesh;

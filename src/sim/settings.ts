@@ -63,7 +63,23 @@ export interface Settings {
    * allowance (0: never past it).
    */
   image: { provider: ImageProvider; quality?: ImageQuality; dailyUsd?: number };
+  /** The reception sofa's velvet, as #rrggbb. */
+  sofaColor?: string;
 }
+
+/** Velvets for the sofa, offered as swatches (any other colour can be picked too). */
+export const SOFA_COLORS: [string, string][] = [
+  ['#8b8378', 'Gris cálido'],
+  ['#e2d9c8', 'Marfil'],
+  ['#6b6a3e', 'Verde oliva'],
+  ['#2f4a3a', 'Verde botella'],
+  ['#2e3a52', 'Azul noche'],
+  ['#a65a3c', 'Terracota'],
+  ['#8a5a32', 'Coñac'],
+  ['#c49a8f', 'Rosa empolvado'],
+  ['#b8922f', 'Mostaza'],
+];
+export const DEFAULT_SOFA_COLOR = SOFA_COLORS[0][0];
 
 export const DEFAULT_SETTINGS: Settings = {
   location: null,

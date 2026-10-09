@@ -23,7 +23,8 @@ import {
   PARCEL,
   roomItems,
   WALLS,
-  WINDOW_FRAMES,
+  WINDOW_MATERIALS,
+  windowFrames,
   WINDOW_MODELS,
   windowStyle,
   type Category,
@@ -352,8 +353,14 @@ function windowLook(): string {
         ${WINDOW_MODELS.map((w) => card({ type: 'window', model: w.id }, w.label, `data-win-style="model" data-value="${w.id}" data-key="ws-model-${w.id}" aria-pressed="${st.model === w.id}" title="${esc(w.note)}"`)).join('')}
       </div>
       <fieldset class="room-field">
-        <legend>Marco · ${esc(WINDOW_FRAMES.find((f) => f.id === st.frame)!.label)}</legend>
-        ${swatches(WINDOW_FRAMES, st.frame, (id) => `data-win-style="frame" data-value="${id}" data-key="ws-frame-${id}"`)}
+        <legend>Material · ${esc(WINDOW_MATERIALS.find((x) => x.id === st.material)!.note)}</legend>
+        <div class="chips" role="group">
+          ${WINDOW_MATERIALS.map((x) => `<button type="button" class="chip" data-win-style="material" data-value="${x.id}" data-key="ws-mat-${x.id}" aria-pressed="${st.material === x.id}">${esc(x.label)}</button>`).join('')}
+        </div>
+      </fieldset>
+      <fieldset class="room-field">
+        <legend>${st.material === 'wood' ? 'Tono' : 'Color'} · ${esc((windowFrames(st.material).find((f) => f.id === st.frame) ?? windowFrames(st.material)[0]).label)}</legend>
+        ${swatches(windowFrames(st.material), st.frame, (id) => `data-win-style="frame" data-value="${id}" data-key="ws-frame-${st.material}-${id}"`)}
       </fieldset>
     </section>`;
 }

@@ -13,7 +13,8 @@ type SimWorker = SimState['workers'][number];
 import { chairStyle, deskStyle, layoutGeometry, layoutItems, layoutRevision, layoutRooms, outdoorStyle, WALL_T, windowStyle, type SkyKind } from '../sim/layout';
 import { ambience } from './ambience';
 import { cloudify, sunThrough, updateClouds } from './clouds';
-import { setGroundWeather, setPlainColor } from './ground';
+import { GROUND_Y, setGroundSheen, setGroundWeather, setPlainColor } from './ground';
+import { PuddleMirror } from './puddleMirror';
 import { setFoliageWind } from './flora';
 import { Rain } from './rain';
 import { SkyLight } from './sky';
@@ -25,11 +26,13 @@ import { entranceSpots, exitSpot, greetSpots, isOutside, patrolSpots, roamStops,
 import { deskOwners, isRequired } from '../sim/ops';
 import { icon } from '../ui/icons';
 import { loadComputer } from './computer';
-import { loadChairs, loadDecor, loadDesks, loadPlants, loadSofas, loadWindows } from './plants';
+import { setWindowGlow } from './furniture';
+import { loadChairs, loadDecor, loadDesks, loadLamps, loadPlants, loadSofas, loadWindows } from './plants';
 import { setThumbVersion, ThumbRenderer } from './thumbs';
 import { Office } from './office';
 import { LIGHT, Materials, mixPalette, type ScenePalette } from './palette';
 import { sunPosition, sunVector } from './sun';
+import { contactShadow } from './textures';
 import { RoomEditor } from './roomEditor';
 
 /** Most pixels the 3D view draws at once (about a 2560 × 1440 screen). */
@@ -47,7 +50,7 @@ const SUN_DIST = 18.4;
  * fills the shade with sky blue and gives every surface its reflections. It does most of what
  * the flat hemisphere light did, which stays only as a touch of colour.
  */
-const ENV_INTENSITY = 0.4;
+const ENV_INTENSITY = 0.45;
 const HEMI_WITH_SKY = 0.65;
 /**
  * Under the weather: the direct sun fades fast as the sky greys (no crisp shadows in the rain),
@@ -62,6 +65,7 @@ const STORM_BG = new THREE.Color('#8e959c');
 const FLASH_BG = new THREE.Color('#e4eaf6');
 /** Moonlight comes from high up, at a fixed angle that reads well. */
 const MOON = new THREE.Vector3(7, 14, 9).normalize();
+const MOONLIGHT = new THREE.Color('#c3cad6');
 const NOON_SUN = new THREE.Color('#fff4e2');
 const LOW_SUN = new THREE.Color('#ffb36b');
 /**
@@ -70,9 +74,9 @@ const LOW_SUN = new THREE.Color('#ffb36b');
  * Never brown: dusk and night light are blue, not dirty.
  */
 const GROUND_BY_SUN: [number, string][] = [
-  [-18, '#1a2f57'],
-  [-10, '#1f3a68'],
-  [-6, '#2b4a7e'],
+  [-18, '#0d0f14'],
+  [-10, '#12161f'],
+  [-6, '#232b3b'],
   [-3, '#4a6394'],
   [-0.5, '#8a86a8'],
   [2, '#d6a790'],
@@ -100,6 +104,9 @@ function groundColor(elevation: number): THREE.Color {
   }
   return new THREE.Color(pts[pts.length - 1][1]);
 }
+/** The soft shade on the floor under someone, where the light can't reach (its own: figures free all they hold). */
+const feetShadow = () => contactShadow(0.42, 0.42, 'disc', 0.32, 0.005, true);
+
 /** People go through the entrance one at a time, this far apart. */
 const DOOR_GAP_MS = 2400;
 /** A slid view glides back to the middle this long after the last drag. */
@@ -126,6 +133,7 @@ export class OfficeScene {
   private weather = new Weather();
   private lightning = new Lightning();
   private rain = new Rain();
+  private mirror = new PuddleMirror(GROUND_Y);
   /** How dark the weather makes the day (0 clear … 1 storm): lights come on with it. */
   private gloom = 0;
   /** Seconds of weather so far (drives the rain and the ripples). */
@@ -183,6 +191,7 @@ export class OfficeScene {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     // Film-like response that keeps the colours as they are and rolls off the highlights.
+    // (AgX was tried: it greys out this palette of pale woods and pastels.)
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.toneMappingExposure = 1;
     this.skyLight = new SkyLight(this.renderer);
@@ -256,6 +265,9 @@ export class OfficeScene {
     loadSofas()
       .then((t) => this.office.setAsset('sofas', t))
       .catch((e) => console.warn('Sofa model failed to load; keeping a simple sofa.', e));
+    loadLamps()
+      .then((t) => this.office.setAsset('lamps', t))
+      .catch((e) => console.warn('Lamp model failed to load; keeping the simple desk lamp.', e));
 
     totoroTemplate()
       .then((t) => (this.totoro = t))
@@ -295,6 +307,8 @@ export class OfficeScene {
     this.base.sun = this.palette.sunIntensity;
     // Warm and low at sunrise and sunset, white at midday.
     this.sun.color.copy(LOW_SUN).lerp(NOON_SUN, THREE.MathUtils.smoothstep(pos.elevation, 2, 25));
+    // At night it's the moon: cool and blue, not the low sun's orange.
+    this.sun.color.lerp(MOONLIGHT, 1 - day);
     this.applyInterior();
     this.office.setSun(this.sunDir.clone().negate());
     this.placeSun();
@@ -312,12 +326,14 @@ export class OfficeScene {
     const lit = Math.max(1 - THREE.MathUtils.smoothstep(elevation, -4, 14), this.gloom) * this.lightsOn;
     this.office.setStreetLights(Math.max(1 - THREE.MathUtils.smoothstep(elevation, -4, 8), this.gloom));
     // Lights off at night it's dim, not black: the sky's blue still shows the room.
-    const inside = mixPalette(Math.max(day, 0.34 + lit * 0.58));
+    const inside = mixPalette(Math.max(day, 0.22 + lit * 0.16));
     this.mats.apply(inside);
     // The night sky fills everything with a soft blue; the ceiling lights warm it up only a touch.
     this.hemi.color.set(p.hemiSky).lerp(ROOM_BOUNCE, lit * 0.15);
     this.hemi.groundColor.set(p.hemiGround).lerp(ROOM_BOUNCE_GROUND, lit * 0.25);
-    this.base.hemi = p.hemiIntensity * (this.scene.environment ? HEMI_WITH_SKY : 1) + (1 - day) * lit * 0.25;
+    // The night's blue light, outside and in: it shows the ground round the building. The rooms keep
+    // their contrast through their own darker colours (see `inside`), not by dimming the night.
+    this.base.hemi = p.hemiIntensity * (this.scene.environment ? HEMI_WITH_SKY : 1);
     // The sky's light fades with the day (at night the hemisphere's blue does it).
     this.base.env = ENV_INTENSITY * (0.06 + 0.94 * day);
     this.applyWeather(this.weather.now, 0);
@@ -466,6 +482,7 @@ export class OfficeScene {
       if (this.avatars.has(w.id)) return;
       const a = this.makeFigure(w, i);
       this.avatars.set(w.id, a);
+      a.root.add(feetShadow());
       this.scene.add(a.root, this.labels.add(w));
       // Hired just now: starts outside, and walks in when it's their turn.
       if (!this.first) this.hideFigure(w.id, a);
@@ -519,6 +536,8 @@ export class OfficeScene {
     this.office.setVeil(sunThrough(this.home.x, this.home.z));
     this.wxTime += dt;
     setGroundWeather(this.weather.wet, this.weather.puddles, this.wxTime, w.rain);
+    // In bright sun the table's sheen all but goes (the sunlit ground outshines it).
+    setGroundSheen(1 - 0.7 * this.sky.day * (1 - w.dark));
     this.rain.update(dt, w.rain, w.wind, 1 - this.sky.day, this.reducedMotion);
     // Trees bend more as the wind gets up (still, for reduced motion).
     setFoliageWind(this.wxTime, this.reducedMotion ? 0 : 0.35 + 0.65 * w.wind + 1.2 * w.storm);
@@ -601,6 +620,13 @@ export class OfficeScene {
     this.office.update(this.camera, this.controls.target, dt, instant && !this.editing);
     if (this.editing) this.thumbs.process();
     this.renderer.render(this.scene, this.camera);
+    // The ground's mirror image, while there are puddles to show it or the plain table's sheen
+    // (drawn after the view, once the shadows exist; the ground shows it from the next frame).
+    const outdoors = this.office.outdoors;
+    const lit = this.office.interiorLight;
+    this.mirror.render(this.renderer, this.scene, this.camera, outdoors ? [outdoors, this.rain.mesh] : [], !!outdoors && (this.weather.puddles > 0.02 || this.office.plainGround), (out) =>
+      setWindowGlow(out ? lit : 0),
+    );
     this.labelRenderer.render(this.scene, this.camera);
     // The label renderer stacks by distance; the add button always sits above the name tags.
     this.addHint.element.style.zIndex = '100000';
@@ -693,6 +719,7 @@ export class OfficeScene {
 
   private rebuild(old: Figure, w: SimWorker, index: number): Figure {
     const next = this.makeFigure(w, index);
+    next.root.add(feetShadow());
     next.adopt(old);
     this.scene.remove(old.root);
     old.dispose();

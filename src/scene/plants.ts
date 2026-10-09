@@ -19,8 +19,13 @@ export type DeskKind = (typeof DESK_KINDS)[number];
 const CHAIR_KINDS = ['Renya', 'Sava', 'Roundish'] as const;
 export type ChairKind = (typeof CHAIR_KINDS)[number];
 const WINDOW_KINDS = ['Window', 'DoorWindow'] as const;
-export type WindowKind = (typeof WINDOW_KINDS)[number];
-const SOFA_KINDS = ['Laszlo'] as const;
+const CLASSIC_WINDOW = ['Classic'] as const;
+export type WindowKind = (typeof WINDOW_KINDS)[number] | (typeof CLASSIC_WINDOW)[number];
+const SOFA_KINDS = ['Nari'] as const;
+const LAMP_KINDS = ['Jwda'] as const;
+export type LampKind = (typeof LAMP_KINDS)[number];
+/** Menu JWDA table lamp (user-supplied .obj, converted, no cable): opal glass globe on a stone foot, 1.3 × real size (38 cm), centred, on y = 0, dimmer towards +z. */
+export const loadLamps = () => loadNodes('lamp.glb', LAMP_KINDS);
 export type SofaKind = (typeof SOFA_KINDS)[number];
 
 /** Material name in the GLB → palette slot, so the plants follow day/night like the rest of the room. */
@@ -68,7 +73,39 @@ export const loadChairs = () => loadNodes('chairs.glb', CHAIR_KINDS);
  * Windows (user-supplied .fbx, converted): a two-leaf slider and a floor-length door window,
  * real size, centred on the opening and the frame depth, y = 0 at floor level.
  */
-export const loadWindows = () => loadNodes('windows.glb', WINDOW_KINDS);
+export const loadWindows = async (): Promise<Map<WindowKind, THREE.Object3D>> => {
+  // The classic one (user-supplied .fbx «Window W01», converted): 1.26 × 1.96 m, sill 0.5 m, slimmed to the wall.
+  const [base, classic] = await Promise.all([loadNodes('windows.glb', WINDOW_KINDS), loadNodes('window-classic.glb', CLASSIC_WINDOW).catch(() => new Map())]);
+  const out = new Map<WindowKind, THREE.Object3D>([...base, ...classic]);
+  // The models have no texture coordinates: the frames get them projected, so wood shows its grain.
+  for (const win of out.values()) {
+    win.traverse((o) => {
+      if (o instanceof THREE.Mesh && (o.material as THREE.Material).name === 'frame' && !o.geometry.attributes.uv) boxUvs(o.geometry);
+    });
+  }
+  return out;
+};
+
+/**
+ * Texture coordinates by box projection: each face takes the two axes it lies along, so the
+ * grain runs along the uprights and the rails. One tile every 0.6 m. Uses the mesh's own scale.
+ */
+function boxUvs(g: THREE.BufferGeometry): void {
+  if (!g.attributes.normal) g.computeVertexNormals();
+  const p = g.attributes.position;
+  const n = g.attributes.normal;
+  const uv = new Float32Array(p.count * 2);
+  const k = 1 / 0.6;
+  for (let i = 0; i < p.count; i++) {
+    const ax = Math.abs(n.getX(i));
+    const ay = Math.abs(n.getY(i));
+    const az = Math.abs(n.getZ(i));
+    const [u, v] = ax >= ay && ax >= az ? [p.getZ(i), p.getY(i)] : ay >= az ? [p.getX(i), p.getZ(i)] : [p.getX(i), p.getY(i)];
+    uv[i * 2] = u * k;
+    uv[i * 2 + 1] = v * k;
+  }
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+}
 
 /** A themed copy of one plant, `height` tall, with materials taken from the shared palette set. */
 export function placePlant(
@@ -89,55 +126,25 @@ export function placePlant(
   return plant;
 }
 
-/** Laszlo bouclé loveseat (user-supplied .obj, converted): real size, seat facing +z, centred, on y = 0. */
+/** The sofa's velvet: one material shared by every sofa in the room, its colour from Ajustes. */
+const velvet = new THREE.MeshPhysicalMaterial({ name: 'velvet', roughness: 0.82, sheen: 1, sheenRoughness: 0.38 });
+velvet.userData.shared = true;
+
+/** Dyes the velvet (any #rrggbb); the sheen is the same colour, lighter, as velvet catches light. */
+export function setSofaColor(hex: string): void {
+  velvet.color.set(hex);
+  const hsl = { h: 0, s: 0, l: 0 };
+  velvet.color.getHSL(hsl);
+  velvet.sheenColor.setHSL(hsl.h, hsl.s * 0.7, Math.min(0.92, hsl.l + 0.35));
+}
+
+/** Nari tufted sofa (user-supplied .fbx, converted and lightened): real size, seat facing +z, centred, on y = 0. */
 export async function loadSofas(): Promise<Map<SofaKind, THREE.Object3D>> {
   const out = await loadNodes('sofa.glb', SOFA_KINDS);
-  // The model came without its fabric: bouclé is drawn here, tiny wool loops as colour and relief.
-  const loops = boucleTexture();
-  out.get('Laszlo')?.traverse((o) => {
-    if (!(o instanceof THREE.Mesh)) return;
-    const m = o.material as THREE.MeshStandardMaterial;
-    if (m.name !== 'boucle') return;
-    m.map = loops;
-    m.bumpMap = loops;
-    m.bumpScale = 2.2;
-    m.color.set('#ffffff');
-    m.needsUpdate = true;
+  // The model came without its textures: the upholstery is velvet, plain, its colour chosen in Ajustes.
+  out.get('Nari')?.traverse((o) => {
+    if (o instanceof THREE.Mesh && (o.material as THREE.Material).name === 'fabric') o.material = velvet;
   });
   return out;
 }
 
-/** Bouclé: a dense tangle of small wool loops, ivory on ivory. Tiles seamlessly. */
-function boucleTexture(): THREE.CanvasTexture {
-  const size = 256;
-  const c = document.createElement('canvas');
-  c.width = c.height = size;
-  const g = c.getContext('2d')!;
-  g.fillStyle = '#e9e1d2';
-  g.fillRect(0, 0, size, size);
-  let seed = 7;
-  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  for (let i = 0; i < 2600; i++) {
-    const x = rnd() * size;
-    const y = rnd() * size;
-    const r = 1.6 + rnd() * 2.4;
-    const light = rnd() > 0.45;
-    g.strokeStyle = light ? `rgba(255,252,246,${0.55 + rnd() * 0.4})` : `rgba(160,146,124,${0.25 + rnd() * 0.3})`;
-    g.lineWidth = 0.8 + rnd() * 0.9;
-    // Draw each loop at its wrapped positions too, so the tile has no seams.
-    for (const dx of [-size, 0, size]) {
-      for (const dy of [-size, 0, size]) {
-        if (x + dx < -6 || x + dx > size + 6 || y + dy < -6 || y + dy > size + 6) continue;
-        g.beginPath();
-        g.arc(x + dx, y + dy, r, rnd() * 6.28, rnd() * 6.28 + 3.5 + rnd() * 2);
-        g.stroke();
-      }
-    }
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(9, 9);
-  t.anisotropy = 4;
-  return t;
-}

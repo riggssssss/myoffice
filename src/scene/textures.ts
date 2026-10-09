@@ -167,3 +167,67 @@ export function groundShadow(
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
+
+/**
+ * Soft dark footprint (a box or a disc), blurred out to its rim: the shade an object throws on
+ * the floor right under it, where sky and lamps can't reach (fake ambient occlusion).
+ */
+const footprints = new Map<'box' | 'disc', THREE.CanvasTexture>();
+function footprint(shape: 'box' | 'disc'): THREE.CanvasTexture {
+  let t = footprints.get(shape);
+  if (t) return t;
+  const s = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d')!;
+  // An alpha map: white where it's dark. Off-canvas shape, only its blurred shadow kept
+  // (works without ctx.filter).
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, s, s);
+  ctx.shadowOffsetX = s * 2;
+  ctx.shadowBlur = 16;
+  ctx.shadowColor = '#fff';
+  ctx.beginPath();
+  if (shape === 'disc') ctx.arc(s / 2 - s * 2, s / 2, s * 0.3, 0, Math.PI * 2);
+  else ctx.roundRect(s * 0.2 - s * 2, s * 0.2, s * 0.6, s * 0.6, s * 0.08);
+  ctx.fill();
+  t = new THREE.CanvasTexture(c);
+  footprints.set(shape, t);
+  return t;
+}
+
+const contactMats = new Map<string, THREE.MeshBasicMaterial>();
+function contactMaterial(shape: 'box' | 'disc', opacity: number): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({
+    color: '#000000',
+    alphaMap: footprint(shape),
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+  });
+}
+
+/**
+ * A contact shadow `w` × `d` metres (the blur reaches a little past it), lying flat at `y`.
+ * Furniture shares one material per look; `own` gives it its own (for figures, which free
+ * everything they hold).
+ */
+export function contactShadow(w: number, d: number, shape: 'box' | 'disc', opacity: number, y = 0.004, own = false): THREE.Mesh {
+  const key = `${shape}|${opacity}`;
+  let mat = own ? undefined : contactMats.get(key);
+  if (!mat) {
+    mat = contactMaterial(shape, opacity);
+    if (!own) {
+      mat.userData.shared = true;
+      contactMats.set(key, mat);
+    }
+  }
+  // The texture's shape fills its middle 60%: size the quad so the solid part matches w × d.
+  const geo = new THREE.PlaneGeometry(w / 0.6, d / 0.6).rotateX(-Math.PI / 2).translate(0, y, 0);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 1;
+  mesh.raycast = () => {};
+  return mesh;
+}

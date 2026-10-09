@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { woodFinish } from './wood';
+import { grainSheen, woodFinish } from './wood';
 
 export interface ScenePalette {
   background: string;
@@ -60,14 +60,15 @@ export const LIGHT: ScenePalette = {
   window: '#dfe7ea',
   hemiSky: '#fff6e8',
   hemiGround: '#b9a98f',
-  hemiIntensity: 1.5,
-  sunIntensity: 2.2,
+  // Sun well above the sky's fill, so its shadows read (outdoors that's 3–5 : 1).
+  hemiIntensity: 1.3,
+  sunIntensity: 2.75,
   lampIntensity: 0,
   screenGlow: 0.55,
 };
 
 export const DARK: ScenePalette = {
-  background: '#1a2f57',
+  background: '#0d0f14',
   floor: '#2c2822',
   floorEdge: '#1f1c18',
   wall: '#35302a',
@@ -90,10 +91,10 @@ export const DARK: ScenePalette = {
   leafCard: '#6f7a68',
   board: '#c9c3b6',
   window: '#26303a',
-  hemiSky: '#6d86d4',
-  hemiGround: '#2c3a5c',
+  hemiSky: '#5f6878',
+  hemiGround: '#24262b',
   hemiIntensity: 0.95,
-  sunIntensity: 0.35,
+  sunIntensity: 0.8,
   lampIntensity: 5,
   screenGlow: 1.6,
 };
@@ -151,6 +152,7 @@ export class Materials {
         ...extra,
         ...SLOT_EXTRAS[slot]?.(),
       });
+      if (slot === 'wood' || slot === 'woodDark') grainSheen(m);
       // Shared across objects: never disposed with one of them.
       m.userData.shared = true;
       this.cache.set(slot, m);

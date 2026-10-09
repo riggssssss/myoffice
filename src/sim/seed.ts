@@ -111,6 +111,7 @@ export function createSeed(now = Date.now()): SimState {
     events: [],
     inbox: [],
     hireIdeas: { status: 'idle', items: [], basis: '', at: 0, by: null, note: '' },
+    items: [],
     ai: { state: 'off', note: '', day: '', tokensToday: 0, limit: 0, resting: [], using: null, reason: null, back: null },
     nextId: 1,
   };

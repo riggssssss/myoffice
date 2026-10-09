@@ -12,6 +12,7 @@ import { LlmError, think } from './llm';
 import { getSettings } from './settings';
 import { DEFAULT_WORK_PER_HOUR } from '../src/sim/settings';
 import { redact } from './vault';
+import { inventoryFor, ITEM_TOOLS } from './items';
 
 /** Minutes between stretches of work for one person. */
 const EVERY_MS: [number, number] = [4 * 60_000, 8 * 60_000];
@@ -113,11 +114,13 @@ async function stretch(w: Worker, taskId: string, publish: () => void): Promise<
       ? `En tu mesa, con tu trabajo continuo (sin final; sigue hasta que el propietario lo pare): «${t.title}» (${ROLES[t.role].label}).`
       : `En tu mesa, con tu tarea: «${t.title}» (${ROLES[t.role].label}, ${t.estimate} h estimadas, vas al ${t.progress} %).`,
     before.length ? `${t.ongoing ? 'Últimas entregas' : 'Hecho hasta ahora'}:\n${before.map((n) => `- ${n.text}`).join('\n')}` : 'Sin empezar.',
+    inventoryFor(w),
     '',
     t.ongoing
       ? 'Haz la siguiente entrega de este trabajo, como una hora real: la pieza o revisión que toca ahora (el post de esta vez, la vigilancia de hoy…). Distinta de las anteriores, nada de repetir.'
       : 'Haz un avance real, como una hora de trabajo: el siguiente paso de verdad (borrador, análisis, propuesta, decisiones…). Nada de planes vagos ni repetir lo hecho.',
     'Antes de nada: ¿puedes dar el siguiente paso con tus herramientas y lo que sabes? Si no (te falta saber cómo o dónde, un acceso, archivos, criterios) → pedir_ayuda y para: sin inventar ni marcar progreso.',
+    'Lo que salga y sirva por sí solo (un texto listo para usar, un guion, un prompt, una tabla, un script, un enlace o referencia buena que encuentres, un contacto, una herramienta, un presupuesto…) → guardar_en_inventario, una pieza por cosa y completa: la revisa tu responsable y llega al propietario. Avances a medias y notas internas no: eso va en tu respuesta.',
     appTools().length
       ? 'Datos del mundo → leer_web y cita fuente. Para actuar en las apps del propietario (publicar, enviar, guardar en sus documentos) → ver_apps, buscar_accion, usar_accion. Si queda esperando su aprobación, di «pendiente de tu aprobación», nunca «publicado».'
       : 'Datos del mundo → leer_web y cita fuente. Nada de «publicado», «subido» o «enviado»: no tienes cómo hacerlo; como mucho, déjalo preparado para el propietario.',
@@ -128,7 +131,7 @@ async function stretch(w: Worker, taskId: string, publish: () => void): Promise<
     'Que se lea de un vistazo: párrafos cortos separados por una línea en blanco, listas con guiones para los puntos y **negrita** para lo clave (decisiones, siguiente paso).',
   ].join('\n');
   try {
-    const tools = toolsFor(w).filter((x) => !['terminar_conversacion', 'crear_tarea', 'asignar_tarea'].includes(x.name));
+    const tools = [...toolsFor(w).filter((x) => !['terminar_conversacion', 'crear_tarea', 'asignar_tarea'].includes(x.name)), ...ITEM_TOOLS];
     const out = await think(brain, systemFor(w), prompt, tools, async (name, args) => {
       w.busyWith = toolLabel(name);
       if (w.deskWork) w.deskWork.doing = toolLabel(name);

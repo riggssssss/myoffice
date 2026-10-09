@@ -1,6 +1,7 @@
 import { ROLES } from '../sim/seed';
 import { api, closeMessage, getState, readMessages, select, subscribe, worker } from '../sim/store';
 import type { OwnerMessage } from '../sim/types';
+import type { PostReview } from '../sim/linkedin';
 import { openCalendar } from './calendar';
 import { openChange } from './changeDialog';
 import { esc, stamp } from './dom';
@@ -49,6 +50,26 @@ function actions(m: OwnerMessage): string {
   }
 }
 
+/** A post for your LinkedIn: as it will go out, and how human it sounds after the humanizer. */
+function postView(m: OwnerMessage, text: string, r: PostReview, toast: boolean): string {
+  const tone = r.verdict === 'pasa' ? 'is-ok' : r.verdict === 'revisar' ? 'is-warn' : 'is-bad';
+  const when = r.for ? `Pensado para el ${new Date(r.for).toLocaleDateString('es-ES', { weekday: 'long' })} a las ${new Date(r.for).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}: al aprobarlo se publica ya.` : 'Al aprobarlo se publica ya.';
+  return `
+    <div class="post-review">
+      <p class="post-score ${tone}"><b>${r.score}</b>/100 humano · ${r.verdict === 'pasa' ? 'Pasa' : r.verdict === 'revisar' ? 'Revisar' : 'Suena a IA'}${r.verdict !== 'pasa' ? ` · lo más flojo: ${esc(r.weakest.toLowerCase())}` : ''}</p>
+      ${
+        toast
+          ? ''
+          : m.closed
+            ? `<div class="post-text">${esc(text)}</div>`
+            : `<label class="sr-only" for="post-${m.id}">Texto del post (puedes editarlo antes de aprobar)</label>
+               <textarea class="post-text post-edit" id="post-${m.id}" data-post-edit="${m.id}" rows="${Math.min(16, Math.max(6, text.split('\n').length + 1))}">${esc(text)}</textarea>`
+      }
+      ${!toast && r.flags.length ? `<p class="meta">Queda por pulir: ${r.flags.map(esc).join(' · ')}</p>` : ''}
+      ${toast ? '' : `<p class="meta">${when}</p>`}
+    </div>`;
+}
+
 /** One message: who, what, and what you can do about it. */
 export function messageCard(m: OwnerMessage, toast = false): string {
   const w = worker(m.from);
@@ -61,7 +82,7 @@ export function messageCard(m: OwnerMessage, toast = false): string {
         ${toast ? `<button class="btn btn-icon btn-sm" type="button" data-msg-act="dismiss" data-msg="${m.id}" aria-label="Cerrar aviso">${icon.close(14)}</button>` : ''}
       </header>
       <p class="msg-text">${linkDossier(esc(m.text))}</p>
-      ${m.detail && !toast ? `<p class="msg-detail">${linkDossier(esc(m.detail))}</p>` : ''}
+      ${m.action?.type === 'app' && m.action.review ? postView(m, m.detail, m.action.review, toast) : m.detail && !toast ? `<p class="msg-detail">${linkDossier(esc(m.detail))}</p>` : ''}
       ${acts ? `<div class="msg-actions">${acts}</div>` : ''}
     </article>`;
 }
@@ -104,9 +125,16 @@ function act(id: string, what: string): void {
 /** Your yes or no to an agent's action in one of your apps; it runs on the server, there and then. */
 async function decideApp(msgId: string, actionId: string, yes: boolean): Promise<void> {
   const card = document.querySelectorAll<HTMLElement>(`[data-key^="msg-${msgId}"] .msg-actions`);
+  // A post: what's in its box now is what goes out.
+  const edited = document.querySelector<HTMLTextAreaElement>(`[data-post-edit="${msgId}"]`)?.value;
+  if (yes && edited !== undefined && /\{\{[^}]*\}\}/.test(edited)) {
+    card.forEach((el) => el.insertAdjacentHTML('afterbegin', '<span class="meta danger post-gap">Rellena los huecos {{…}} del texto antes de aprobarlo.</span>'));
+    document.querySelector<HTMLTextAreaElement>(`[data-post-edit="${msgId}"]`)?.focus();
+    return;
+  }
   card.forEach((el) => (el.innerHTML = `<span class="meta">${yes ? 'Haciéndolo…' : 'Descartando…'}</span>`));
   try {
-    await api(`/api/apps/actions/${actionId}`, 'PUT', { action: yes ? 'approve' : 'reject' });
+    await api(`/api/apps/actions/${actionId}`, 'PUT', { action: yes ? 'approve' : 'reject', ...(yes && edited !== undefined ? { text: edited } : {}) });
     closeMessage(msgId);
   } catch (e) {
     card.forEach((el) => (el.innerHTML = `<span class="meta danger">${esc(e instanceof Error ? e.message : 'No salió')}</span>`));
