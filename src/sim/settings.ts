@@ -1,7 +1,39 @@
 /** Office-wide preferences kept by the local server. Keys never live here: only in the vault. */
 
 export type TextProvider = 'anthropic' | 'groq' | 'nvidia' | 'ollama';
-export type ImageProvider = 'none' | 'fal' | 'recraft';
+export type ImageProvider = 'none' | 'fal' | 'recraft' | 'cloudflare';
+
+/** Cloudflare's image models, by what you get: the free allowance (10,000 a day) goes further with the quicker ones. */
+export type ImageQuality = 'rapida' | 'equilibrada' | 'alta' | 'pro';
+export const IMAGE_QUALITY: { id: ImageQuality; label: string; model: string; perDay: number; note: string }[] = [
+  { id: 'rapida', label: 'Rápida', model: '@cf/black-forest-labs/flux-1-schnell', perDay: 170, note: 'Flux 1 Schnell: bocetos y pruebas' },
+  { id: 'equilibrada', label: 'Equilibrada', model: '@cf/black-forest-labs/flux-2-klein-4b', perDay: 95, note: 'Flux 2 Klein 4B: borradores correctos' },
+  { id: 'alta', label: 'Alta', model: '@cf/black-forest-labs/flux-2-klein-9b', perDay: 7, note: 'Flux 2 Klein 9B: más detalle y mejor luz' },
+  { id: 'pro', label: 'Profesional', model: '@cf/leonardo/lucid-origin', perDay: 3, note: 'Leonardo Lucid Origin: mockups y textos nítidos' },
+];
+
+/** Today's free Cloudflare allowance, as the server reads it. */
+export interface ImageUsage {
+  /** Neurons used today, the free ones a day, and the most allowed today (free + your budget). */
+  used: number;
+  free: number;
+  cap: number;
+  /** Your daily budget beyond the free allowance, and what's gone of it today (USD). */
+  budgetUsd: number;
+  spentUsd: number;
+  /** Pictures made from this app today. */
+  pictures: number;
+  /** How many more square pictures fit today, at each quality. */
+  fits: Record<ImageQuality, number>;
+  quality: ImageQuality;
+  /** When the allowance starts again (ISO). */
+  resetsAt: string;
+  /** Where `used` comes from: Cloudflare's own figures, or this app's sums when they can't be read. */
+  source: 'cloudflare' | 'app';
+  /** Why Cloudflare's figures couldn't be read, said plainly. */
+  why?: string;
+  checkedAt: number;
+}
 
 /**
  * One AI in the office's priority list. The first one that works is used; when it hits a limit
@@ -25,17 +57,32 @@ export interface Settings {
    * The text AI every agent uses unless they have their own. `terse`: among themselves they talk
    * like a clever caveman (no filler, fragments) to spend far fewer tokens; to you, clear and brief.
    */
-  ai: { provider: TextProvider; model: string; ollamaUrl: string; dailyTokens: number; terse: boolean; chain: AiChoice[] };
-  /** Image generation for design work. */
-  image: { provider: ImageProvider };
+  ai: { provider: TextProvider; model: string; ollamaUrl: string; dailyTokens: number; terse: boolean; chain: AiChoice[]; workPerHour?: number };
+  /**
+   * Image generation for design work. `dailyUsd`: what you allow to spend a day beyond the free
+   * allowance (0: never past it).
+   */
+  image: { provider: ImageProvider; quality?: ImageQuality; dailyUsd?: number };
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   location: null,
   north: 0,
   ai: { provider: 'anthropic', model: 'claude-sonnet-5-5', ollamaUrl: 'http://127.0.0.1:11434', dailyTokens: 300_000, terse: true, chain: [{ provider: 'anthropic', model: 'claude-sonnet-5-5' }] },
-  image: { provider: 'none' },
+  image: { provider: 'none', dailyUsd: 0 },
 };
+
+/** How many stretches of desk work the whole team does an hour at most (0: no limit). */
+export const WORK_PACE: { perHour: number; label: string; note: string }[] = [
+  { perHour: 12, label: 'Tranquilo', note: 'gasta poco' },
+  { perHour: 30, label: 'Normal', note: 'el habitual' },
+  { perHour: 60, label: 'Intenso', note: 'más avance, más gasto' },
+  { perHour: 0, label: 'Sin límite', note: 'cada uno a su ritmo' },
+];
+export const DEFAULT_WORK_PER_HOUR = 30;
+
+/** What Cloudflare charges beyond the free allowance. */
+export const USD_PER_1000_NEURONS = 0.011;
 
 export interface ModelInfo {
   id: string;
@@ -79,6 +126,8 @@ export const KEYS = {
   nvidia: 'nvidia_api_key',
   fal: 'fal_api_key',
   recraft: 'recraft_api_key',
+  cfAccount: 'cloudflare_account_id',
+  cfToken: 'cloudflare_api_token',
 } as const;
 
 export interface ProviderInfo {

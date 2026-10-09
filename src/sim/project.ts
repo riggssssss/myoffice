@@ -123,7 +123,7 @@ export const WRITE_ORDER: WriteLevel[] = ['off', 'propuesta', 'directo'];
 export const lowerWrite = (a: WriteLevel, b: WriteLevel): WriteLevel => WRITE_ORDER[Math.min(WRITE_ORDER.indexOf(a), WRITE_ORDER.indexOf(b))];
 
 /** Who may change files when writing is on. Everyone may read. */
-export const WRITE_ROLES: RoleId[] = ['director', 'dev', 'design', 'marketing'];
+export const WRITE_ROLES: RoleId[] = ['director', 'dev', 'design', 'uiux', 'marketing'];
 
 /** Holds whatever is switched on, enforced by the link itself. */
 export const WRITE_RULES = [

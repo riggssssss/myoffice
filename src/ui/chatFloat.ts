@@ -1,10 +1,11 @@
 import { ROLES } from '../sim/seed';
-import { fileUrl, getSelectedId, getState, ownerChat, resetChat, upload, worker } from '../sim/store';
-import type { ChatActivity, ChatFile, ChatImage, ChatLine, ToolUse, Worker } from '../sim/types';
+import { fileUrl, getSelectedId, getState, ownerChat, ownerTalk, readChat, resetChat, select, upload, worker } from '../sim/store';
+import type { ChatActivity, ChatFile, ChatImage, ChatLine, Conversation, DeskWork, ToolUse, Worker } from '../sim/types';
 import { appLogo } from './brandLogos';
 import { esc, stamp } from './dom';
 import { linkDossier } from './dossier';
 import { icon } from './icons';
+import { prepImage } from './imagePrep';
 
 /**
  * Your chat with one person, floating over the left of the office: you write (and attach
@@ -39,14 +40,26 @@ export function chatPerson(): Worker | undefined {
   if (id !== lastSelected) {
     lastSelected = id;
     closedFor = null;
+    privateFor = null;
   }
   return id && id !== closedFor ? worker(id) : undefined;
 }
 
+/** ✕ (or Esc): the chat closes and nobody stays selected. */
 export function closeChat(): void {
   closedFor = getSelectedId();
+  select(null);
   document.dispatchEvent(new CustomEvent('chat-change'));
 }
+
+/** Their live conversation with a colleague, if they're in one (shown as a group you can join). */
+function liveTalk(w: Worker): Conversation | undefined {
+  const id = w.talk?.convId;
+  return id ? getState().conversations.find((c) => c.id === id && c.endedAt === null) : undefined;
+}
+/** You chose their private chat while they're talking with someone. */
+let privateFor: string | null = null;
+const groupOf = (w: Worker) => (privateFor === w.id ? undefined : liveTalk(w));
 
 const face = (w: Worker, hidden = false) =>
   `<span class="talk-dot chat-face${hidden ? ' is-quiet' : ''}" style="--role:${ROLES[w.role].color}" aria-hidden="true">${esc(w.name.charAt(0))}</span>`;
@@ -193,9 +206,81 @@ function liveView(w: Worker, doing: ChatActivity): string {
     </li>`;
 }
 
+// ---------------------------------------------------------------- their desk work
+
+const minutes = (ms: number) => {
+  const m = Math.max(1, Math.round(ms / 60_000));
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+};
+
+const steps = (tools: ToolUse[]) =>
+  tools.length
+    ? `<ol class="chat-steps work-steps">${tools
+        .map((t) => `<li><span class="chat-step-mark">${t.app ? appLogo(t.app, 'is-xs') : '<i></i>'}</span><span>${linkDossier(esc(capital(t.note)))}</span></li>`)
+        .join('')}</ol>`
+    : '';
+
+/** A stretch at their desk, folded: what on, how long, how many steps; open, their thinking and what came out. */
+function workView(w: Worker, l: ChatLine): string {
+  const key = `w-${l.at}`;
+  const open = openTrails.has(key);
+  const work = l.work!;
+  return `
+    <li class="chat-line is-a is-work" data-key="${key}">
+      ${face(w, true)}
+      <div class="work-card${open ? ' is-open' : ''}">
+        <button class="work-head" type="button" data-trail="${key}" aria-expanded="${open}">
+          <span class="work-icon">${icon.tick(13)}</span>
+          <span class="work-sum"><span class="work-title">Trabajó en «${esc(work.title)}»</span><span class="meta">${l.tools.length ? `${l.tools.length} paso${l.tools.length === 1 ? '' : 's'} · ` : ''}${minutes(l.at - work.startedAt)} · ${stamp(l.at)}</span></span>
+          <span class="chat-trail-caret">${icon.chevron(14)}</span>
+        </button>
+        ${open ? `<div class="work-body">${steps(l.tools)}<div class="chat-text work-text">${rich(l.text)}</div></div>` : ''}
+      </div>
+    </li>`;
+}
+
+/** At their desk right now: the task, the steps done and the one going on (open, live). */
+function deskView(w: Worker, d: DeskWork): string {
+  const phase = `animation-delay:-${Math.round(performance.now() % 1800)}ms`;
+  return `
+    <li class="chat-line is-a is-work is-live">
+      ${face(w)}
+      <div class="work-card is-open is-now" role="status">
+        <div class="work-head">
+          <span class="work-icon"><span class="typing" aria-hidden="true"><i></i><i></i><i></i></span></span>
+          <span class="work-sum"><span class="work-title">Trabajando en «${esc(d.title)}»</span><span class="meta">desde hace ${minutes(Date.now() - d.startedAt)}</span></span>
+        </div>
+        <div class="work-body">
+          ${steps(d.steps)}
+          ${d.doing ? `<p class="work-doing"><span class="chat-live-text" style="${phase}">${esc(capital(d.doing))}…</span></p>` : ''}
+          <p class="section-note">Si le escribes ahora, lo tiene en cuenta.</p>
+        </div>
+      </div>
+    </li>`;
+}
+
+/** Their work on hold, and what it's waiting for (your answer here is what gets it going again). */
+function pausedView(w: Worker): string {
+  const s = getState();
+  const paused = s.tasks.filter((t) => t.assigneeId === w.id && t.status === 'blocked');
+  if (!paused.length) return '';
+  const asked = s.questions.find((q) => q.answer === null && (q.byId ?? q.workerId) === w.id);
+  return `
+    <div class="chat-paused" role="note">
+      ${icon.alert(14)}
+      <div>
+        ${paused
+          .map((t) => `<p><strong>En pausa: «${esc(t.title)}»</strong>${t.blockReason ? ` · ${esc(t.blockReason.replace(/^Espera tu respuesta:\s*/, ''))}` : ''}</p>`)
+          .join('')}
+        <p class="meta">${asked ? 'Te lo ha preguntado abajo: contéstale aquí y sigue con ello.' : 'Escríbele aquí cómo quieres que siga y lo retoma.'}</p>
+      </div>
+    </div>`;
+}
+
 // ---------------------------------------------------------------- the thread
 
 function lineView(w: Worker, l: ChatLine, prev: ChatLine | undefined, next: ChatLine | undefined): string {
+  if (l.work) return workView(w, l);
   const mine = l.speaker === 'owner';
   const key = `cl-${l.at}`;
   const grouped = prev?.speaker === l.speaker && l.at - prev.at < 5 * 60_000;
@@ -207,6 +292,7 @@ function lineView(w: Worker, l: ChatLine, prev: ChatLine | undefined, next: Chat
       ${mine ? '' : face(w, grouped)}
       <div class="chat-stack">
         ${mine ? '' : trail(l.tools, key)}
+        ${l.question ? `<p class="chat-asks">${icon.alert(12)}Necesita algo de ti</p>` : ''}
         ${l.text ? `<div class="chat-body"><div class="chat-text">${mine ? `<p>${linkDossier(esc(l.text)).replace(/\n/g, '<br>')}</p>` : rich(l.text)}</div></div>` : ''}
         ${media ? `<div class="chat-media">${media}</div>` : ''}
         ${lastOfRun ? `<p class="chat-when num">${stamp(l.at)}</p>` : ''}
@@ -217,6 +303,8 @@ function lineView(w: Worker, l: ChatLine, prev: ChatLine | undefined, next: Chat
 export function renderChat(): string {
   const w = chatPerson();
   if (!w) return '';
+  const group = groupOf(w);
+  if (group) return renderGroup(w, group);
   const chat = w.chat;
   const lines = chat?.lines ?? [];
   const wait = chat?.pending && !chat.thinking ? waitingNote(w) : '';
@@ -230,6 +318,7 @@ export function renderChat(): string {
         <h2 class="chat-float-name">${esc(w.name)}</h2>
         <p class="meta"><span class="presence${here ? ' is-on' : ''}" aria-hidden="true"></span>${here ? 'En la oficina' : 'Fuera de la oficina'} · ${esc(w.title)}</p>
       </div>
+      ${liveTalk(w) ? `<button class="btn btn-sm chat-switch" type="button" data-chat-group title="Ver su conversación en directo">${icon.users(14)}Conversación</button>` : ''}
       <button class="btn btn-icon btn-ghost" type="button" data-chat-reset aria-label="Empezar un chat nuevo" title="Chat nuevo: este se guarda en sus Ajustes" ${!lines.length || chat?.thinking ? 'disabled' : ''}>${icon.refresh(15)}</button>
       <button class="btn btn-icon btn-ghost" type="button" data-chat-close aria-label="Cerrar chat">${icon.close(16)}</button>
     </header>
@@ -244,13 +333,57 @@ export function renderChat(): string {
               <p class="section-note"${chat?.archive?.length ? ' hidden' : ''}>Una duda, una idea o un encargo. Puedes adjuntar imágenes y documentos, y te puede enviar imágenes de tus apps o documentos que prepare. Si no es de su puesto, se lo pasa a ${esc(organizer)}.</p>
             </div>`
       }
+      ${pausedView(w)}
       <ol class="chat" aria-live="polite">
         ${lines.map((l, i) => lineView(w, l, lines[i - 1], lines[i + 1])).join('')}
+        ${w.deskWork ? deskView(w, w.deskWork) : ''}
         ${chat?.thinking ? liveView(w, chat.doing ?? { label: capital(chat.thinking) }) : ''}
       </ol>
       ${wait ? `<p class="section-note chat-float-wait">${esc(wait)}</p>` : ''}
     </div>
     <div class="chat-drop" aria-hidden="true">${icon.attach(22)}<span>Suelta aquí para adjuntar</span></div>`;
+}
+
+/** Two of them talking, as a group you're in: their lines, who's thinking, and your box to step in. */
+function renderGroup(w: Worker, c: Conversation): string {
+  const a = worker(c.a);
+  const b = worker(c.b);
+  const people = [a, b].filter((x): x is Worker => !!x);
+  const think = c.thinking ? worker(c.thinking.who) : undefined;
+  const lineOf = (l: ChatLine, prev: ChatLine | undefined, next: ChatLine | undefined) => {
+    const mine = l.speaker === 'owner';
+    const who = mine ? undefined : worker(l.speaker);
+    const grouped = prev?.speaker === l.speaker;
+    const lastOfRun = !next || next.speaker !== l.speaker;
+    return `
+      <li class="chat-line ${mine ? 'is-owner' : 'is-a'}${grouped ? ' is-grouped' : ''}" data-key="g-${l.at}">
+        ${who ? face(who, grouped) : ''}
+        <div class="chat-stack">
+          ${!mine && !grouped ? `<p class="chat-who">${esc(who?.name ?? 'Alguien')}</p>` : ''}
+          ${!mine ? trail(l.tools, `g-${l.at}`) : ''}
+          <div class="chat-body"><div class="chat-text">${mine ? `<p>${esc(l.text).replace(/\n/g, '<br>')}</p>` : rich(l.text)}</div></div>
+          ${lastOfRun ? `<p class="chat-when num">${stamp(l.at)}</p>` : ''}
+        </div>
+      </li>`;
+  };
+  return `
+    <header class="chat-float-head is-group">
+      <span class="chat-faces">${people.map((p) => face(p)).join('')}</span>
+      <div class="chat-float-who">
+        <h2 class="chat-float-name">${people.map((p) => esc(p.name)).join(' y ')}</h2>
+        <p class="meta"><span class="presence is-on is-live" aria-hidden="true"></span>Conversación en directo</p>
+      </div>
+      <button class="btn btn-sm chat-switch" type="button" data-chat-private="${w.id}" title="Tu chat privado con ${esc(w.name)}">Chat con ${esc(w.name)}</button>
+      <button class="btn btn-icon btn-ghost" type="button" data-chat-close aria-label="Cerrar chat">${icon.close(16)}</button>
+    </header>
+    <div class="chat-float-body" data-chat-scroll>
+      <p class="chat-topic"><span class="meta">De qué hablan</span>${esc(c.topic)}</p>
+      <ol class="chat" aria-live="polite">
+        ${c.lines.map((l, i) => lineOf(l, c.lines[i - 1], c.lines[i + 1])).join('')}
+        ${think ? liveView(think, { label: c.thinking!.tool ? capital(c.thinking!.tool) : 'Pensando qué decir' }) : ''}
+      </ol>
+      <p class="section-note chat-float-wait">Lo que escribas aquí lo leen ${people.map((p) => esc(p.name)).join(' y ')}: te contestan y siguen teniéndolo en cuenta.</p>
+    </div>`;
 }
 
 // ---------------------------------------------------------------- your box
@@ -264,7 +397,7 @@ export function chatComposer(): string {
         <button class="btn btn-icon btn-ghost composer-attach" type="button" data-attach aria-label="Adjuntar imágenes o documentos" title="Adjuntar (o arrastra, o pega una imagen)">${icon.attach(17)}</button>
         <input type="file" data-attach-input multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,.md,text/csv,.csv,application/json,.docx,.xlsx,.pptx" />
         <label class="sr-only" for="chat-say">Escribe en el chat</label>
-        <textarea id="chat-say" name="text" rows="1" maxlength="4000"></textarea>
+        <textarea id="chat-say" name="text" rows="1"></textarea>
         <button class="btn btn-icon composer-send" type="submit" aria-label="Enviar">${icon.send(16)}</button>
       </div>
       <p class="composer-note" data-chat-note hidden></p>
@@ -297,10 +430,18 @@ function attach(float: HTMLElement, files: FileList | File[]): void {
   for (const f of [...files].slice(0, MAX_ATTACH - pending.length)) {
     const p: Pending = { key: ++pendingKey, name: f.name || 'imagen.png', size: f.size, preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : null, progress: 0, file: null, error: null };
     pending.push(p);
-    upload(f, (part) => {
-      p.progress = part;
-      renderAttachments(float);
-    })
+    // Pictures go measured (their colours) and, if huge, smaller: an AI that sees takes up to ~3.5 MB.
+    prepImage(f)
+      .then((prep) =>
+        upload(
+          prep.file,
+          (part) => {
+            p.progress = part;
+            renderAttachments(float);
+          },
+          prep.palette,
+        ),
+      )
       .then((file) => {
         p.file = file;
         if (p.preview && file.kind === 'image') ready.set(file.id, p.preview);
@@ -403,7 +544,11 @@ export function syncChat(float: HTMLElement, render: (force: boolean) => void): 
   const scroller = () => float.querySelector<HTMLElement>('[data-chat-scroll]');
   const before = scroller();
   const atBottom = !before || before.scrollHeight - before.scrollTop - before.clientHeight < 80;
-  render(shown !== w.id);
+  // A different person, or switching between their conversation and your private chat: a new thread.
+  const thread = `${w.id}:${groupOf(w)?.id ?? ''}`;
+  render(shown !== thread);
+  // On screen: their messages are read.
+  if (w.chat?.unread) readChat(w.id);
   // Chat files load with the session's token, then show.
   for (const img of float.querySelectorAll<HTMLImageElement>('img[data-file-src]')) {
     const id = img.dataset.fileSrc!;
@@ -415,22 +560,25 @@ export function syncChat(float: HTMLElement, render: (force: boolean) => void): 
   }
   const box = float.querySelector<HTMLTextAreaElement>('#chat-say')!;
   const off = getState().ai.state === 'off';
-  box.placeholder = `Escribe a ${w.name}…`;
+  const group = groupOf(w);
+  const pair = group ? [worker(group.a)?.name, worker(group.b)?.name].filter(Boolean).join(' y ') : '';
+  box.placeholder = group ? `Escribe a ${pair}…` : `Escribe a ${w.name}…`;
   box.disabled = off;
-  float.querySelector<HTMLButtonElement>('.composer-attach')!.disabled = off;
+  // In a group there are no attachments: that goes in someone's private chat.
+  float.querySelector<HTMLButtonElement>('.composer-attach')!.disabled = off || !!group;
   renderAttachments(float);
   const note = float.querySelector<HTMLElement>('[data-chat-note]')!;
   note.hidden = !off;
   note.innerHTML = off ? 'Para hablar con el equipo hace falta la IA. <button class="link" type="button" data-open-settings="ai">Configurarla</button>' : '';
   // Follow the thread, unless you scrolled up to reread.
   const after = scroller();
-  if (after && (shown !== w.id || atBottom)) after.scrollTop = after.scrollHeight;
+  if (after && (shown !== thread || atBottom)) after.scrollTop = after.scrollHeight;
   // Pictures that load later push the thread: stay at the bottom if you were there.
   for (const img of float.querySelectorAll<HTMLImageElement>('.chat img')) {
     if (!img.complete) img.addEventListener('load', () => atBottom && after && (after.scrollTop = after.scrollHeight), { once: true });
   }
-  if (shown !== w.id && !off) box.focus();
-  shown = w.id;
+  if (shown !== thread && !off) box.focus();
+  shown = thread;
 }
 
 export function bindChat(float: HTMLElement): void {
@@ -444,7 +592,11 @@ export function bindChat(float: HTMLElement): void {
     if (!w || box.disabled || pending.some((p) => !p.file && !p.error)) return box.focus();
     const files = pending.filter((p) => p.file).map((p) => p.file!.id);
     if (!text && !files.length) return box.focus();
-    ownerChat(w.id, text, files);
+    const group = groupOf(w);
+    if (group) {
+      if (!text) return box.focus();
+      ownerTalk(group.id, text);
+    } else ownerChat(w.id, text, files);
     pending = [];
     renderAttachments(float);
     box.value = '';
@@ -453,6 +605,15 @@ export function bindChat(float: HTMLElement): void {
   float.addEventListener('click', (e) => {
     const t = e.target as HTMLElement;
     if (t.closest('[data-chat-close]')) return closeChat();
+    const priv = t.closest<HTMLElement>('[data-chat-private]');
+    if (priv) {
+      privateFor = priv.dataset.chatPrivate!;
+      return document.dispatchEvent(new CustomEvent('chat-change'));
+    }
+    if (t.closest('[data-chat-group]')) {
+      privateFor = null;
+      return document.dispatchEvent(new CustomEvent('chat-change'));
+    }
     if (t.closest('[data-chat-reset]')) {
       const w = chatPerson();
       if (w) resetChat(w.id);

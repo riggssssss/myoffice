@@ -1,6 +1,7 @@
 import { guessLocation } from '../scene/sun';
-import { KEYS, MAX_CHAIN, MCP_PRESETS, mcpSecret, modelLabel, NVIDIA_MODELS, PROVIDERS, validModel, type AiChoice, type McpPreset, type McpServer, type Settings, type TextProvider } from '../sim/settings';
-import { api, getState, setOfficeInfo } from '../sim/store';
+import { DEFAULT_WORK_PER_HOUR, IMAGE_QUALITY, KEYS, MAX_CHAIN, WORK_PACE, type ImageQuality, type ImageUsage, MCP_PRESETS, mcpSecret, modelLabel, NVIDIA_MODELS, PROVIDERS, validModel, type AiChoice, type McpPreset, type McpServer, type Settings, type TextProvider } from '../sim/settings';
+import { api, fileUrl, getState, setOfficeInfo } from '../sim/store';
+import type { ChatFile } from '../sim/types';
 import { esc } from './dom';
 import { icon } from './icons';
 import { config } from './config';
@@ -49,10 +50,17 @@ export async function openSettings(current: Settings, onSaved: (s: Settings) => 
   let tab: Tab = start;
   /** Connectors tab: the library, the preset picker, or one connector being set up. */
   let mcpView: { mode: 'list' } | { mode: 'pick' } | { mode: 'edit'; id: string; preset: McpPreset | null } = { mode: 'list' };
+  /** «Probar con una imagen»: how it went (ok: the picture's address on this page). */
+  let imageTest: { state: 'idle' | 'busy' | 'ok' | 'bad'; text: string } = { state: 'idle', text: '' };
+  /** Today's free Cloudflare allowance, kept fresh while the IA tab is open. */
+  let usage: ImageUsage | null = null;
+  const loadImageUsage = async () => {
+    usage = await api<ImageUsage>('/api/images/usage').catch(() => usage);
+  };
   /** The provider picked in "Añadir IA". */
   let addProvider: TextProvider = current.ai.chain.some((c) => c.provider === 'groq') ? 'anthropic' : 'groq';
   try {
-    await Promise.all([loadSecrets(), loadLibrary(), loadProject()]);
+    await Promise.all([loadSecrets(), loadLibrary(), loadProject(), loadImageUsage()]);
   } catch {
     /* shown as unconfigured; saving will report the problem */
   }
@@ -210,6 +218,13 @@ export async function openSettings(current: Settings, onSaved: (s: Settings) => 
             <p class="section-note">Hoy van <span class="num">${getState().ai.tokensToday.toLocaleString('es-ES')}</span>. ${settings.ai.dailyTokens ? 'Al llegar al límite los agentes dejan de conversar hasta mañana.' : 'Sin límite: trabajan hasta donde dejen tus IAs (los planes gratis tienen sus propios topes).'} Una conversación suele gastar entre 3.000 y 15.000.</p>
           </div>
           <div class="field">
+            <label for="s-pace">Ritmo de trabajo del equipo</label>
+            <select id="s-pace" data-ai="workPerHour">
+              ${WORK_PACE.map((p) => `<option value="${p.perHour}" ${(settings.ai.workPerHour ?? DEFAULT_WORK_PER_HOUR) === p.perHour ? 'selected' : ''}>${esc(p.label)}${p.perHour ? ` · ${p.perHour} turnos de trabajo a la hora` : ''} (${esc(p.note)})</option>`).join('')}
+            </select>
+            <p class="section-note">Cuántas veces a la hora se pone a trabajar alguien del equipo, entre todos. Con equipos grandes, es lo que más marca el gasto.</p>
+          </div>
+          <div class="field">
             <label for="s-terse">Cómo hablan entre ellos</label>
             <select id="s-terse" data-ai="terse">
               <option value="true" ${settings.ai.terse ? 'selected' : ''}>Al grano (gasta mucho menos)</option>
@@ -231,15 +246,108 @@ export async function openSettings(current: Settings, onSaved: (s: Settings) => 
             <label for="s-image">Para generar piezas de diseño</label>
             <select id="s-image" data-image>
               <option value="none" ${image === 'none' ? 'selected' : ''}>Sin generación de imágenes</option>
+              <option value="cloudflare" ${image === 'cloudflare' ? 'selected' : ''}>Cloudflare Workers AI (gratis cada día)</option>
               <option value="fal" ${image === 'fal' ? 'selected' : ''}>fal.ai (muchos modelos con una clave)</option>
               <option value="recraft" ${image === 'recraft' ? 'selected' : ''}>Recraft (logos y vectores)</option>
             </select>
           </div>
+          ${image === 'cloudflare' ? cloudflareFields() : ''}
           ${image === 'fal' ? keyField(KEYS.fal, 'Clave de fal.ai', { help: 'https://fal.ai/dashboard/keys' }) : ''}
           ${image === 'recraft' ? keyField(KEYS.recraft, 'Clave de Recraft', { help: 'https://www.recraft.ai/profile/api' }) : ''}
         </section>
         ${composioKeySection()}
       </div>`;
+  };
+
+  /** Cloudflare: account, token, quality, today's allowance and a test picture. */
+  const cloudflareFields = () => {
+    const q = settings.image.quality ?? 'equilibrada';
+    const ready = hasSecret(KEYS.cfAccount) && hasSecret(KEYS.cfToken);
+    return `
+      <p class="section-note">Gratis hasta 10.000 «neuronas» al día. Crea una cuenta gratis en Cloudflare; el ID de cuenta está en el panel (Workers AI → «Use REST API») y el token, en Mi perfil → Tokens de API → plantilla «Workers AI». Para ver aquí tu saldo real, añade al token el permiso «Account Analytics: Read».</p>
+      ${keyField(KEYS.cfAccount, 'ID de cuenta de Cloudflare', { help: 'https://dash.cloudflare.com/?to=/:account/ai/workers-ai', placeholder: '32 caracteres' })}
+      ${keyField(KEYS.cfToken, 'Token de API de Cloudflare', { help: 'https://dash.cloudflare.com/profile/api-tokens' })}
+      ${ready ? `<div class="cf-usage" data-cf-usage aria-live="polite">${usageMeter()}</div>` : ''}
+      ${
+        ready
+          ? `<div class="field">
+              <label for="s-image-usd">Gasto máximo al día, además de lo gratis (USD)</label>
+              <input id="s-image-usd" data-image-usd type="number" inputmode="decimal" min="0" max="50" step="0.05" value="${settings.image.dailyUsd ?? 0}" />
+              <p class="section-note">0 = nunca pasar del cupo gratis. Cloudflare cobra 0,011 $ por cada 1.000 neuronas de más: unos 0,03 $ por imagen Profesional y 0,015 $ por una Alta. Necesita su plan Workers Paid (5 $ al mes).</p>
+            </div>`
+          : ''
+      }
+      <div class="field">
+        <label for="s-image-q">Calidad</label>
+        <select id="s-image-q" data-image-quality>
+          ${IMAGE_QUALITY.map((x) => `<option value="${x.id}" ${x.id === q ? 'selected' : ''}>${esc(x.label)} · ${ready && usage ? `te quedan ${usage.fits[x.id]} hoy` : `unas ${x.perDay} al día`} (${esc(x.note)})</option>`).join('')}
+        </select>
+      </div>
+      ${
+        ready
+          ? `<div class="image-test">
+              <button class="btn btn-sm" type="button" data-image-test ${imageTest.state === 'busy' ? 'disabled' : ''}>${icon.image(14)}${imageTest.state === 'busy' ? 'Generando…' : 'Probar con una imagen'}</button>
+              ${imageTest.state === 'bad' ? `<p class="field-error">${esc(imageTest.text)}</p>` : ''}
+              ${imageTest.state === 'ok' ? `<img class="image-test-pic" src="${imageTest.text}" alt="Imagen de prueba generada" />` : ''}
+            </div>`
+          : ''
+      }`;
+  };
+
+  /** Today's free allowance: what's left, what it's enough for and when it comes back. */
+  const usageMeter = () => {
+    if (!usage) return '<p class="meta">Consultando tu saldo en Cloudflare…</p>';
+    const left = Math.max(0, usage.free - usage.used);
+    const share = left / usage.free;
+    const pick = IMAGE_QUALITY.find((x) => x.id === usage!.quality) ?? IMAGE_QUALITY[1];
+    const fits = usage.fits[pick.id];
+    const until = Math.max(0, new Date(usage.resetsAt).getTime() - Date.now());
+    const h = Math.floor(until / 3_600_000);
+    const m = Math.floor((until % 3_600_000) / 60_000);
+    const back = new Date(usage.resetsAt).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+    const checked = new Date(usage.checkedAt).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const n = (v: number) => v.toLocaleString('es-ES');
+    const usd = (v: number) => `${v.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} $`;
+    return `
+      <div class="cf-usage-head">
+        <span class="cf-usage-title">Saldo gratis de hoy</span>
+        <span class="cf-usage-num"><b>${n(left)}</b> de ${n(usage.free)} neuronas</span>
+      </div>
+      <div class="bar bar-lg cf-usage-bar ${share < 0.15 ? 'is-low' : ''}" role="meter" aria-valuemin="0" aria-valuemax="${usage.free}" aria-valuenow="${left}" aria-label="Neuronas gratis que te quedan hoy"><i style="transform:scaleX(${share.toFixed(3)})"></i></div>
+      <p class="cf-usage-line">${
+        fits > 0
+          ? `Te llega para <b>${fits} ${fits === 1 ? 'imagen' : 'imágenes'}</b> más en ${esc(pick.label)}`
+          : `No queda para ninguna imagen más en ${esc(pick.label)}`
+      } · se renueva a las ${back} (en ${h ? `${h} h ` : ''}${m} min)${usage.pictures ? ` · hoy has hecho ${usage.pictures}` : ''}</p>
+      <p class="cf-usage-line">${
+        usage.budgetUsd > 0
+          ? `Gasto de hoy: <b>${usd(usage.spentUsd)}</b> de ${usd(usage.budgetUsd)}`
+          : 'Sin gasto: al acabarse lo gratis, se para hasta el día siguiente'
+      }</p>
+      <p class="meta">${
+        usage.source === 'cloudflare'
+          ? `${icon.tick(12)}Datos de tu cuenta de Cloudflare · actualizado a las ${checked}`
+          : esc(usage.why ? `${usage.why}. Mientras, es la cuenta de lo hecho desde esta app.` : 'Cuenta de lo hecho desde esta app.')
+      }</p>`;
+  };
+  /** While the IA tab shows Cloudflare, the meter refreshes itself (just the meter: typing isn't interrupted). */
+  let usageTimer = 0;
+  const watchUsage = () => {
+    window.clearInterval(usageTimer);
+    const refresh = async () => {
+      const box = body.querySelector<HTMLElement>('[data-cf-usage]');
+      if (!d.open || !box) return window.clearInterval(usageTimer);
+      if (document.hidden) return;
+      await loadImageUsage();
+      if (!box.isConnected) return;
+      box.innerHTML = usageMeter();
+      body.querySelectorAll<HTMLOptionElement>('[data-image-quality] option').forEach((o) => {
+        const x = IMAGE_QUALITY.find((v) => v.id === o.value);
+        if (x && usage) o.textContent = `${x.label} · te quedan ${usage.fits[x.id]} hoy (${x.note})`;
+      });
+    };
+    usageTimer = window.setInterval(refresh, 20_000);
+    if (!usage) void refresh();
   };
 
   // ---------------------------------------------------------------- connectors
@@ -415,6 +523,7 @@ export async function openSettings(current: Settings, onSaved: (s: Settings) => 
       b.tabIndex = on ? 0 : -1;
     });
     body.innerHTML = panel();
+    if (body.querySelector('[data-cf-usage]')) watchUsage();
   };
   const fail = (id: string, text: string) => {
     const el = body.querySelector<HTMLElement>(`#${id}`);
@@ -442,6 +551,18 @@ export async function openSettings(current: Settings, onSaved: (s: Settings) => 
     if (tab === 'project' && (await projectClick(t, render))) return;
     if (tab === 'mcp' && (await appsClick(t, render))) return;
     if (t.closest('[data-locate]')) return locate();
+    if (t.closest('[data-image-test]')) {
+      imageTest = { state: 'busy', text: '' };
+      render();
+      try {
+        const f = await api<ChatFile>('/api/images/test', 'POST');
+        imageTest = { state: 'ok', text: await fileUrl(f.id) };
+      } catch (e) {
+        imageTest = { state: 'bad', text: e instanceof Error ? e.message : 'No salió' };
+      }
+      await loadImageUsage();
+      return render();
+    }
     const delAi = t.closest<HTMLElement>('[data-chain-del]');
     if (delAi) return saveChain(settings.ai.chain.filter((_, i) => i !== Number(delAi.dataset.chainDel)));
     const keyFor = t.closest<HTMLElement>('[data-key-for]');
@@ -525,6 +646,15 @@ export async function openSettings(current: Settings, onSaved: (s: Settings) => 
       addProvider = t.value as TextProvider;
       render();
       body.querySelector<HTMLElement>('[data-add-provider]')?.focus();
+    } else if (t.matches('[data-image-usd]')) {
+      const v = Math.max(0, Math.min(50, Number((t as HTMLInputElement).value) || 0));
+      await save({ image: { provider: settings.image.provider, dailyUsd: v < 0.01 ? 0 : v } });
+      await loadImageUsage();
+      render();
+    } else if (t.matches('[data-image-quality]')) {
+      await save({ image: { provider: settings.image.provider, quality: t.value as ImageQuality } });
+      await loadImageUsage();
+      render();
     } else if (t.matches('[data-image]')) {
       await save({ image: { provider: t.value as Settings['image']['provider'] } });
       render();

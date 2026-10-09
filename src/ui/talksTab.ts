@@ -24,7 +24,7 @@ export function openConversation(id: string | null): void {
 }
 
 const who = (id: string) => worker(id);
-const nameOf = (id: string) => who(id)?.name ?? 'Alguien que ya no está';
+const nameOf = (id: string) => (id === 'owner' ? 'Tú' : (who(id)?.name ?? 'Alguien que ya no está'));
 const dot = (id: string) => {
   const w = who(id);
   return `<span class="talk-dot" style="--role:${w ? ROLES[w.role].color : '#999'}">${esc((w?.name ?? '?').charAt(0))}</span>`;

@@ -10,13 +10,19 @@ import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { closeDb, getJson, openDb, setJson } from './db';
-import { runCommand, snapshot, startOffice } from './office';
+import { mutate, runCommand, snapshot, startOffice } from './office';
+import { applyTemplate } from '../src/sim/ops';
+import type { TeamId } from '../src/sim/types';
 import { DATA_DIR, ensureDataDir } from './paths';
 import { PORT, TOKEN, trustedRequest, validToken } from './security';
 import { deleteMcp, listMcp, putMcp } from './mcp';
 import { forgetMcp, mcpStatus, setMcpAccess, testMcp } from './mcpHost';
-import { fileBytes, fileHeaders, fileInfo, MAX_FILE, saveFile } from './files';
-import { setFileFinder } from '../src/sim/ops';
+import { fileBytes, fileHeaders, fileInfo, makeFile, MAX_FILE, saveFile } from './files';
+import { draw, imageUsage } from './images';
+import { draftAgent } from './agentDraft';
+import { addRef, editGuide, rebuildGuide, rememberPalette, removeRef, resumeStyle, retryRef, setStyleNotifier, styleView, undoGuide, updateRef } from './style';
+import { LlmError } from './llm';
+import { setFileFinder, setLongKeeper } from '../src/sim/ops';
 import { appsReady, appsView, catalog, connectApp, disconnectApp, forgetApps, setAccess } from './composio';
 import { actOnAction, getAction } from './approvals';
 import { actOnChange, approveManifest, forgetProject, getChange, linkFile, newToken, patchProject, projectView, reconnect, startProject } from './project';
@@ -32,6 +38,13 @@ ensureDataDir();
 openDb();
 openVault();
 setFileFinder(fileInfo);
+setLongKeeper((text) => {
+  try {
+    return makeFile('mensaje.md', text);
+  } catch {
+    return null;
+  }
+});
 
 const sockets = new Set<WebSocket>();
 
@@ -121,7 +134,17 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return json(res, 413, { error: 'Pesa demasiado: el máximo son 20 MB' });
     }
     try {
-      return json(res, 200, saveFile(name, bytes));
+      const saved = saveFile(name, bytes);
+      // Colours the browser measured in a picture (kept in case it becomes a style reference).
+      const palette = req.headers['x-file-palette'];
+      if (saved.kind === 'image' && typeof palette === 'string' && palette.length < 2000) {
+        try {
+          rememberPalette(saved.id, JSON.parse(decodeURIComponent(palette)));
+        } catch {
+          /* not a palette: the picture is kept anyway */
+        }
+      }
+      return json(res, 200, saved);
     } catch (e) {
       return json(res, 400, { error: (e as Error).message });
     }
@@ -133,6 +156,68 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!info || !bytes) return json(res, 404, { error: 'not found' });
     res.writeHead(200, fileHeaders(info));
     return void res.end(bytes);
+  }
+
+  // Pictures: today's free allowance, and one test picture to see that it works.
+  if (path === '/api/images/usage' && req.method === 'GET') return json(res, 200, await imageUsage());
+  if (path === '/api/images/test' && req.method === 'POST') {
+    try {
+      return json(res, 200, await draw('Product mockup: a plain white t-shirt laid flat on a light oak table, soft natural daylight, minimal, high detail, studio photo', 'cuadrada', 'prueba'));
+    } catch (e) {
+      return json(res, 400, { error: (e as Error).message });
+    }
+  }
+
+  // The art director's references and the style guide (Equipo → their file → Estilo).
+  if (path === '/api/refs') {
+    if (req.method === 'GET') return json(res, 200, styleView());
+    if (req.method === 'POST') {
+      const b = (await readBody(req)) as { fileId?: unknown; palette?: unknown; note?: unknown } | null;
+      if (typeof b?.fileId !== 'string') return json(res, 400, { error: 'Falta la imagen' });
+      const r = addRef(b.fileId, 'upload', b.palette, typeof b.note === 'string' ? b.note : '');
+      return typeof r === 'string' ? json(res, 400, { error: r }) : json(res, 200, r);
+    }
+  }
+  const ref = /^\/api\/refs\/(r[0-9a-f]{10})(\/analyze)?$/.exec(path);
+  if (ref) {
+    if (ref[2] && req.method === 'POST') return retryRef(ref[1]), json(res, 200, { ok: true });
+    if (!ref[2] && req.method === 'PUT') {
+      const problem = updateRef(ref[1], ((await readBody(req)) ?? {}) as Record<string, unknown>);
+      return problem ? json(res, 400, { error: problem }) : json(res, 200, { ok: true });
+    }
+    if (!ref[2] && req.method === 'DELETE') return removeRef(ref[1]), json(res, 200, { ok: true });
+  }
+  if (path === '/api/style' && req.method === 'PUT') {
+    const problem = editGuide(await readBody(req));
+    return problem ? json(res, 400, { error: problem }) : json(res, 200, styleView());
+  }
+  if (path === '/api/style/rebuild' && req.method === 'POST') {
+    const problem = rebuildGuide();
+    return problem ? json(res, 400, { error: problem }) : json(res, 200, { ok: true });
+  }
+  if (path === '/api/style/undo' && req.method === 'POST') {
+    const problem = undoGuide();
+    return problem ? json(res, 400, { error: problem }) : json(res, 200, styleView());
+  }
+
+  // A ready-made team: who's kept (ids from the preview) and whether adopted people get the post's card.
+  const tpl = path.match(/^\/api\/team\/templates\/(arte|crecimiento|producto)$/);
+  if (tpl && req.method === 'POST') {
+    const body = (await readBody(req)) as { keep?: unknown; profiles?: unknown } | null;
+    const keep = Array.isArray(body?.keep) ? body.keep.filter((x): x is string => typeof x === 'string' && x.length <= 64).slice(0, 30) : [];
+    const result = mutate(() => applyTemplate(tpl[1] as TeamId, { keep, profiles: body?.profiles !== false }));
+    return typeof result === 'string' ? json(res, 400, { error: result }) : json(res, 200, result);
+  }
+
+  // A new agent from your description: the AI organises it into a card for you to edit (nothing is created).
+  if (path === '/api/agents/draft' && req.method === 'POST') {
+    const body = (await readBody(req)) as { text?: unknown } | null;
+    if (typeof body?.text !== 'string') return json(res, 400, { error: 'Falta la descripción' });
+    try {
+      return json(res, 200, await draftAgent(body.text));
+    } catch (e) {
+      return json(res, e instanceof LlmError && e.status === 429 ? 429 : 400, { error: redact((e as Error).message) });
+    }
   }
 
   if (path === '/api/settings') {
@@ -301,7 +386,8 @@ const server = createServer((req, res) => {
   });
 });
 
-const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY });
+// Room for a long chat message (it's kept as a document once it arrives).
+const wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
@@ -331,6 +417,12 @@ const stop = startOffice((kind, state) => {
   const msg = JSON.stringify({ type: 'state', kind, state });
   for (const ws of sockets) if (ws.readyState === ws.OPEN) ws.send(msg);
 });
+
+// The Estilo tab refreshes when a reference or the guide changes.
+setStyleNotifier(() => {
+  for (const ws of sockets) if (ws.readyState === ws.OPEN) ws.send('{"type":"refs"}');
+});
+resumeStyle();
 
 // The Proyecto tab refreshes when the connection or its log changes (the view itself goes over /api).
 const stopProject = startProject(() => {

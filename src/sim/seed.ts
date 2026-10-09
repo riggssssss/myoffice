@@ -4,6 +4,8 @@ export const SCHEMA_VERSION = 7;
 
 /** The head's desk is always this seat number, so their office can come furnished. */
 export const DIRECTOR_SLOT = -1;
+/** Chairs round the meeting table: nobody more sits down. */
+export const MEETING_SEATS = 6;
 
 /** Every office has these four, one each: renamable and restylable, not removable. None has a desk. */
 export const REQUIRED_ROLES: RoleId[] = ['director', 'organizer', 'interviewer', 'skeptic'];
@@ -39,12 +41,26 @@ export const ROLES: Record<RoleId, RoleInfo> = {
     title: 'Investigación',
     about: 'Competencia, mercado y tendencias, siempre con fuentes.',
   },
+  art: {
+    id: 'art',
+    label: 'Dirección de arte',
+    color: '#a4508b',
+    title: 'Dirección de arte',
+    about: 'Guía el estilo visual: aprende de tus referencias, mantiene la guía de estilo y revisa y dirige cada pieza.',
+  },
   design: {
     id: 'design',
     label: 'Diseño',
     color: '#bf5f74',
     title: 'Diseño',
     about: 'Marca, referencias visuales y piezas (imágenes, logos).',
+  },
+  uiux: {
+    id: 'uiux',
+    label: 'Diseño UI/UX',
+    color: '#3d8fb5',
+    title: 'Diseño UI/UX',
+    about: 'Interfaces, flujos, prototipos y usabilidad de la web o la app.',
   },
   dev: {
     id: 'dev',
@@ -69,7 +85,10 @@ export const ROLES: Record<RoleId, RoleInfo> = {
   },
 };
 
-export const ROLE_ORDER: RoleId[] = ['director', 'organizer', 'interviewer', 'research', 'design', 'dev', 'marketing', 'skeptic'];
+export const ROLE_ORDER: RoleId[] = ['director', 'organizer', 'interviewer', 'research', 'art', 'design', 'uiux', 'dev', 'marketing', 'skeptic'];
+
+/** Roles whose work is visual (they draw at the desk, and the style guide is theirs). */
+export const VISUAL_ROLES: ReadonlySet<RoleId> = new Set(['art', 'design', 'uiux']);
 
 /** An office with only its three fixed roles; ops.ensureRequired() hires them. */
 export function createSeed(now = Date.now()): SimState {

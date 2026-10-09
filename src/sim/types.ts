@@ -6,7 +6,9 @@ export type RoleId =
   | 'organizer'
   | 'interviewer'
   | 'research'
+  | 'art'
   | 'design'
+  | 'uiux'
   | 'dev'
   | 'marketing'
   | 'skeptic';
@@ -35,6 +37,27 @@ export type Activity =
   | 'interviewing'
   /** In a conversation with a colleague (see Worker.talk). */
   | 'talking';
+
+/** An agent's card: what they do, who they are, what they put first. */
+export interface AgentProfile {
+  /** What they do here, in a sentence or two. */
+  summary: string;
+  /** Character, background, how they talk and what they won't stand. */
+  persona: string;
+  /** Concrete practices they keep to. */
+  focus: string[];
+}
+
+/** A new agent as the AI organised your description, for you to edit before creating them. */
+export interface AgentDraft {
+  name: string;
+  title: string;
+  role: RoleId;
+  reportsTo: string | null;
+  profile: AgentProfile;
+}
+
+export type TeamId = 'arte' | 'crecimiento' | 'producto';
 
 export interface Worker {
   id: string;
@@ -65,8 +88,14 @@ export interface Worker {
   talk: { convId: string; with: string; host: boolean } | null;
   /** What they'll do here, in their own words, from their interview on arrival. */
   brief: string | null;
+  /** Who they are and what they do, written when they were created (from your description or a team template), editable. */
+  profile?: AgentProfile;
+  /** The team template they joined with, if any. */
+  team?: TeamId;
   /** Heads-down at their desk right now (their AI is working): what on. */
   busyWith: string | null;
+  /** The same, in detail, for your chat with them: the task, the steps so far and the current one. */
+  deskWork?: DeskWork | null;
   /** Your chat with them, one to one: the last lines, and whether your last message awaits an answer. */
   chat?: DirectChat;
 }
@@ -81,6 +110,8 @@ export interface DirectChat {
   doing?: ChatActivity | null;
   /** Earlier chats you restarted from, newest first: kept to reread, never quoted to their AI. */
   archive?: { at: number; lines: ChatLine[] }[];
+  /** Their messages you haven't seen yet (shown over their head). */
+  unread?: number;
 }
 
 /** What someone is doing while they answer you. */
@@ -129,6 +160,19 @@ export interface ChatLine {
   tools: ToolUse[];
   files?: ChatFile[];
   images?: ChatImage[];
+  /** They need something from you (a question that pauses their work): its id. */
+  question?: string;
+  /** A stretch of work at their desk (what they thought and did), shown folded in your chat with them. */
+  work?: { taskId: string; title: string; startedAt: number };
+}
+
+/** A stretch of work going on at someone's desk right now: what on, the steps so far, the one now. */
+export interface DeskWork {
+  taskId: string;
+  title: string;
+  startedAt: number;
+  steps: ToolUse[];
+  doing: string | null;
 }
 
 /** Two agents talking, for real: each line comes from their AI, with their tools. */
@@ -150,6 +194,8 @@ export interface Conversation {
   error: string | null;
   /** Cut because they were going round in circles. */
   looped?: boolean;
+  /** You stepped in (lines with speaker 'owner'): they answer you and talk a little longer. */
+  joined?: number;
 }
 
 /** Something you ask the office for, in your words: the organiser turns it into tasks. */
@@ -321,6 +367,8 @@ export interface ProjectBrief {
   rulings?: { text: string; at: number }[];
   /** Things you've said you handle yourself («la indexación es cosa mía»): the team drops them. */
   yours?: string[];
+  /** Roles you've said you want in the team («director de arte que supervise los mockups»): hire ideas start from them. */
+  wanted?: string[];
   /** Webs you've passed to the office, to read and go back to. */
   links?: { url: string; title: string; at: number }[];
 }

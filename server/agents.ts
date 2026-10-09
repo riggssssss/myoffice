@@ -12,13 +12,15 @@ import { hiresTick } from './hires';
 import { briefText, meetingTick, rulingsText } from './meetings';
 import { workTick } from './work';
 import { ROLES } from '../src/sim/seed';
-import { agentKey, modelLabel, PROVIDERS, validModel, type AiChoice, type TextProvider } from '../src/sim/settings';
+import { agentKey, KEYS, modelLabel, PROVIDERS, validModel, type AiChoice, type TextProvider } from '../src/sim/settings';
 import { dayKey } from '../src/sim/time';
 import type { AiReason, ChatLine, Conversation, ConversationKind, RoleId, Task, TaskStatus, ToolUse, Worker } from '../src/sim/types';
 import { getJson, setJson } from './db';
-import { LlmError, restingNow, think, type Brain, type ToolSpec } from './llm';
+import { LlmError, restingNow, sees, think, type Brain, type ToolSpec } from './llm';
 import { getSettings } from './settings';
 import { PROJECT_TOOL_LABEL, projectBrief, projectTools, useProjectTool } from './project';
+import { canDraw, drawFor, IMAGE_TOOL, visualTask } from './images';
+import { guideText, isArtTeam, reviewImage, STYLE_TOOLS, styleFor } from './style';
 import { appTools, canSearch, connectedApps, searchWeb, SEARCH_TOOL, useAppTool } from './composio';
 import { markTainted, setRemember } from './approvals';
 import { mcpLabel, mcpToolsFor, useMcpTool } from './mcpHost';
@@ -136,6 +138,37 @@ function usage(): { day: string; tokens: number } {
   return u?.day === today ? u : { day: today, tokens: 0 };
 }
 
+/**
+ * For work with pictures, AIs that see first: theirs that do, then your keys' (Groq's Qwen 3.8,
+ * quick and sharp; NVIDIA's Kimi K3, the most precise but slow; Llama 3.2 Vision as a last
+ * resort). `strict`: only those (an analysis that must see); else the rest follow, in case those
+ * are resting. Checked in October 2026: providers retire models, so this list ages.
+ */
+export function eyesFor(brains: Brain[], strict = false): Brain[] {
+  const seeing = brains.filter(sees);
+  const groq = getSecret(KEYS.groq);
+  const nvidia = getSecret(KEYS.nvidia);
+  const spare: Brain[] = [
+    ...(groq ? [{ provider: 'groq', model: 'qwen/qwen3.8-27b', key: groq } as Brain] : []),
+    ...(nvidia
+      ? [
+          { provider: 'nvidia', model: 'moonshotai/kimi-k3', key: nvidia } as Brain,
+          { provider: 'nvidia', model: 'meta/llama-3.2-90b-vision-instruct', key: nvidia } as Brain,
+        ]
+      : []),
+  ].filter((b) => !seeing.some((s) => s.provider === b.provider && s.model === b.model));
+  // Quick ones first: NVIDIA's free models that see (Kimi K3) can take minutes to answer.
+  const rank: Record<string, number> = { anthropic: 0, groq: 1, ollama: 2, nvidia: 3 };
+  const eyes = [...seeing, ...spare].sort((a, b) => (rank[a.provider] ?? 9) - (rank[b.provider] ?? 9));
+  return strict ? eyes : [...eyes, ...brains.filter((b) => !sees(b))];
+}
+
+/** The office has spent today's token allowance (set in Ajustes → IA → Gasto). */
+export function overDailyCap(): boolean {
+  const limit = getSettings().ai.dailyTokens;
+  return limit > 0 && usage().tokens >= limit;
+}
+
 export function spend(tokens: number): void {
   const u = usage();
   setJson('usage', { day: u.day, tokens: u.tokens + tokens });
@@ -249,8 +282,35 @@ function tick(): void {
 
 const live = () => getState().conversations.filter((c) => c.endedAt === null);
 
+/** Talks you asked for in a chat («ve a hablar con Marta»): they start as soon as both are free. */
+const visits: { from: string; to: string; topic: string }[] = [];
+
+/** Someone goes to talk to a colleague because you said so: right now if both are free, else next. */
+export function askToTalk(a: Worker, b: Worker, about: string): 'now' | 'later' {
+  const topic = `El propietario le ha pedido a ${a.name} que hable con ${b.name}${about ? `: ${about}` : ''}. ${b.name} le cuenta lo que sabe del proyecto que le sirva a ${a.name}, y acuerdan cómo sigue ${a.name} con su trabajo.`;
+  if (free(a) && free(b)) {
+    begin('colleagues', a, b, topic);
+    return 'now';
+  }
+  if (!visits.some((v) => v.from === a.id && v.to === b.id)) visits.push({ from: a.id, to: b.id, topic });
+  return 'later';
+}
+
+/** What they took down lately (talks, meetings): what they know beyond the dossier. */
+export const recentNotes = (w: Worker, n = 5) => memories(w).slice(-n).map((x) => x.text);
+
 function startSome(now: number): void {
   const st = getState();
+  for (const v of [...visits]) {
+    const a = worker(v.from);
+    const b = worker(v.to);
+    if (!a || !b) visits.splice(visits.indexOf(v), 1);
+    else if (free(a) && free(b)) {
+      visits.splice(visits.indexOf(v), 1);
+      begin('colleagues', a, b, v.topic);
+      break;
+    }
+  }
   // Newcomers are interviewed as soon as both are in, whatever else is going on.
   const interviewer = st.workers.find((w) => w.role === 'interviewer');
   const guest = st.workers.find((w) => w.interviewSince !== null && !w.talk && here(w) && hasBrain(w));
@@ -438,6 +498,12 @@ function addQuestion(w: Worker, by: Worker | null, ask: (typeof asks)[number], s
   st.questions.unshift({ id: `p${st.nextId++}`, workerId: w.id, byId: by?.id ?? null, taskId: ask.taskId, kind: ask.kind, text, at: Date.now(), answer: null, answeredAt: null, delivered: false });
   st.questions.length = Math.min(st.questions.length, 40);
   log('question', `${w.name} necesita algo de ti${by ? ` (te lo pregunta ${by.name})` : ''}: «${text}»`, w.id);
+  // Said in their chat with you, like any message: your reply there answers it.
+  const asker = by ?? w;
+  const chat = (asker.chat ??= { lines: [], pending: false, thinking: null });
+  chat.lines.push({ at: Date.now(), speaker: asker.id, text: by ? `${text}\n\n(Es para ${w.name}: tiene su tarea en pausa hasta que me contestes.)` : text, tools: [], question: st.questions[0].id });
+  if (chat.lines.length > 40) chat.lines.splice(0, chat.lines.length - 40);
+  chat.unread = (chat.unread ?? 0) + 1;
   tellOwner((by ?? w).id, 'question', text, by ? `Para ${w.name}, que tiene su tarea en pausa hasta que respondas.` : 'Tiene su tarea en pausa hasta que respondas.', { type: 'answer', questionId: st.questions[0].id });
   notify('change');
 }
@@ -537,11 +603,13 @@ async function speak(c: Conversation): Promise<void> {
   publish();
   const used: ToolUse[] = [];
   // An interview ends with the interviewer: one more line, so the summary is theirs, not the newcomer's.
-  const limit = c.kind === 'critique' ? CRITIQUE_LINES : c.kind === 'interview' ? MAX_LINES + 1 : MAX_LINES;
+  // Each time you step in, they talk a little longer (to answer you and carry on).
+  const limit = (c.kind === 'critique' ? CRITIQUE_LINES : c.kind === 'interview' ? MAX_LINES + 1 : MAX_LINES) + (c.joined ?? 0) * 3;
   const last = c.lines.length >= limit - 1;
   // Being interviewed isn't the moment to pause work or end the talk: what they need goes in the summary.
   const guest = c.kind === 'interview' && me.id === c.b;
-  const kit = toolsFor(me).filter((t) => !guest || (t.name !== 'pedir_ayuda' && t.name !== 'terminar_conversacion'));
+  // Talking with a colleague isn't the time to make pictures (they cost your daily allowance).
+  const kit = toolsFor(me).filter((t) => t.name !== 'generar_imagen' && (!guest || (t.name !== 'pedir_ayuda' && t.name !== 'terminar_conversacion')));
   try {
     const out = await think(brain, systemFor(me), promptFor(me, other, c, last), kit, async (name, args) => {
       if (c.endedAt !== null) return 'La conversación ya terminó.';
@@ -557,7 +625,7 @@ async function speak(c: Conversation): Promise<void> {
     if (c.endedAt !== null) return;
     const text = tidy(out.text, me.name);
     // Going round in circles (saying what's already been said): they leave it there.
-    const loop = !!text && c.lines.some((l) => similar(l.text, text) > 0.45);
+    const loop = !!text && c.lines.some((l) => l.speaker !== 'owner' && similar(l.text, text) > 0.45);
     if (text || used.length) c.lines.push({ at: Date.now(), speaker: me.id, text: text || '…', tools: used } satisfies ChatLine);
     c.thinking = null;
     turnOf.set(c.id, other.id);
@@ -589,6 +657,16 @@ async function speak(c: Conversation): Promise<void> {
     notify('change');
     publish();
   }
+}
+
+/** You said something in their conversation: whoever's turn it is answers soon, not after a pause. */
+export function hurryConversation(id: string): void {
+  const c = getState().conversations.find((x) => x.id === id);
+  if (!c || c.endedAt !== null) return;
+  // The last of them to speak heard you; the other answers.
+  const lastAgent = [...c.lines].reverse().find((l) => l.speaker !== 'owner')?.speaker;
+  if (lastAgent) turnOf.set(c.id, lastAgent === c.a ? c.b : c.a);
+  nextAt.set(c.id, Date.now() + 1500);
 }
 
 /** How alike two lines are (shared words over all words), 0–1. */
@@ -626,6 +704,8 @@ const ROLE_DUTY: Partial<Record<RoleId, string>> = {
   director: 'Decides prioridades, última palabra. El trabajo debe servir al producto. Falta un perfil para el trabajo → sugerir_contratacion (solo si hace falta de verdad).',
   organizer: 'Organizas: tarea sin asignar o alguien sin tarea → la creas o asignas. Llevas orden, plazos y el calendario del propietario: fecha que mencione → agendar.',
   interviewer: 'Entrevistas a quien llega: qué hará, cómo trabaja, qué necesita. Una pregunta concreta cada vez.',
+  art: 'Diriges el estilo visual: las referencias del propietario y la guía de estilo mandan sobre gustos. Das briefs visuales concretos (luz, color, encuadre, escena) y revisas cada pieza con revisar_imagen antes de darla por buena.',
+  uiux: 'Diseñas flujos e interfaces: cada decisión con su porqué (claridad, accesibilidad, conversión), en pasos y pantallas concretas.',
   skeptic:
     'Apoyo crítico, no freno: un solo riesgo concreto e importante + propuesta para comprobarlo o evitarlo, y te vas. No repitas críticas (mira tus notas). Nada relevante → dilo en una frase y termina.',
 };
@@ -655,6 +735,21 @@ function style(audience: Audience): string {
   ].join('\n');
 }
 
+/** Their card, as they carry it: what they do, who they are, what they put first. */
+function profileText(w: Worker, audience: Audience): string {
+  const p = w.profile;
+  if (!p) return '';
+  return [
+    `Lo que haces aquí: ${p.summary}`,
+    p.persona ? `Quién eres: ${p.persona}` : '',
+    p.focus.length ? `Te centras en: ${p.focus.join('; ')}.` : '',
+    // Their character shows in what they put forward and decide, never as padding.
+    audience === 'team' && getSettings().ai.terse ? 'Tu carácter se nota en lo que propones y decides, no en relleno.' : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 export function systemFor(w: Worker, audience: Audience = 'team'): string {
   const st = getState();
   const boss = worker(w.reportsTo);
@@ -666,7 +761,9 @@ export function systemFor(w: Worker, audience: Audience = 'team'): string {
     boss ? `Respondes a ${boss.name} (${boss.title}).` : 'Diriges la oficina.',
     team.length ? `Te responden: ${team.map((t) => `${t.name} (${t.title})`).join(', ')}.` : '',
     ROLE_DUTY[w.role] ?? '',
+    profileText(w, audience),
     w.brief ? `Tu puesto (entrevista): ${w.brief}` : '',
+    styleFor(w, w.role === 'art'),
     brief ? `Dossier del producto (del propietario):\n${brief}` : 'Producto aún desconocido: no lo supongas ni inventes; dirección lo hablará con el propietario.',
     rulingsText(),
     st.brief.links?.length ? `Webs que os ha pasado el propietario (léelas con leer_web cuando te sirvan): ${st.brief.links.slice(0, 6).map((l) => `${l.url} (${l.title})`).join('; ')}` : '',
@@ -694,14 +791,17 @@ export function systemFor(w: Worker, audience: Audience = 'team'): string {
 
 function promptFor(me: Worker, other: Worker, c: Conversation, last: boolean): string {
   const st = getState();
-  const name = (id: string) => worker(id)?.name ?? '¿?';
+  const name = (id: string) => (id === 'owner' ? 'Propietario' : (worker(id)?.name ?? '¿?'));
   const time = new Intl.DateTimeFormat('es-ES', { weekday: 'long', hour: '2-digit', minute: '2-digit' }).format(Date.now());
+  // You stepped into their conversation: your last words since this person last spoke come first.
+  const mineAt = c.lines.map((l) => l.speaker).lastIndexOf(me.id);
+  const ownerSaid = c.lines.slice(mineAt + 1).filter((l) => l.speaker === 'owner');
   const notes = memories(me).slice(-5);
   const mine = st.tasks.filter((t) => t.assigneeId === me.id && t.status !== 'done');
   const waiting = st.questions.filter((q) => q.workerId === me.id && q.answer === null);
   return [
     `Situación: ${c.topic}`,
-    `Con ${other.name}, ${other.title} (${ROLES[other.role].label}). ${time}.`,
+    `Con ${other.name}, ${other.title} (${ROLES[other.role].label})${other.profile ? `: ${other.profile.summary.slice(0, 160)}` : ''}. ${time}.`,
     mine.length
       ? `Tus tareas: ${mine.map((t) => `${t.id} «${t.title}» (${t.ongoing ? 'continua' : t.id === me.taskId ? `en curso ${t.progress}%` : t.status === 'backlog' ? 'en cola' : t.status})`).join('; ')}.`
       : 'Sin tareas.',
@@ -721,6 +821,9 @@ function promptFor(me: Worker, other: Worker, c: Conversation, last: boolean): s
     'Conversación:',
     c.lines.length ? c.lines.map((l) => `${name(l.speaker)}: ${l.text}`).join('\n') : '(vacía: empiezas tú)',
     '',
+    ownerSaid.length
+      ? `El propietario (la persona para la que trabajáis) acaba de entrar en la conversación: «${ownerSaid.map((l) => l.text).join(' ')}». Contéstale a él primero, claro y en 1-3 frases, y seguid teniéndolo en cuenta.`
+      : '',
     last ? 'Última intervención: cierra con conclusión y terminar_conversacion.' : 'Tu siguiente intervención.',
   ]
     .filter((x) => x !== '')
@@ -772,6 +875,9 @@ export const TOOL_LABEL: Record<string, string> = {
   recordar: 'repasando sus notas',
   leer_web: 'leyendo una web',
   buscar_web: 'buscando en internet',
+  generar_imagen: 'generando una imagen',
+  ver_guia_estilo: 'mirando la guía de estilo',
+  revisar_imagen: 'revisando una imagen',
   terminar_conversacion: 'cerrando la conversación',
   pedir_ayuda: 'pidiendo ayuda',
   ver_calendario: 'mirando el calendario',
@@ -892,6 +998,11 @@ export function toolsFor(w: Worker): ToolSpec[] {
   tools.push(...projectTools(w));
   // Searching the internet, with a Composio key.
   if (canSearch()) tools.push(SEARCH_TOOL);
+  // Making pictures, once there's an image provider set up.
+  if (canDraw()) tools.push(IMAGE_TOOL);
+  // The office's look: the art team reads the guide; the art director reviews pieces against it.
+  if (isArtTeam(w)) tools.push(STYLE_TOOLS.guide as unknown as ToolSpec);
+  if (w.role === 'art') tools.push(STYLE_TOOLS.review as unknown as ToolSpec);
   // Your connected apps (Ajustes → Conectores), once there's at least one.
   tools.push(...appTools());
   // The connectors ticked for this agent (Ajustes → Conectores, their file → IA).
@@ -993,7 +1104,7 @@ function mergeDuplicateTasks(): void {
 }
 
 /** Roles named by their id in English («asignado a dev»): said as you'd say them. */
-const ROLE_WORDS: RoleId[] = ['organizer', 'interviewer', 'research', 'design', 'dev', 'skeptic'];
+const ROLE_WORDS: RoleId[] = ['organizer', 'interviewer', 'research', 'design', 'uiux', 'dev', 'skeptic'];
 
 /** For anything you read: task ids become their titles, role ids their names. */
 export function forOwner(text: string): string {
@@ -1034,9 +1145,14 @@ export async function useTool(me: Worker, c: Conversation | null, name: string, 
         const titulo = text(args.titulo, 160);
         const rol = ROLE_IDS.includes(args.rol as RoleId) ? (args.rol as RoleId) : null;
         if (!titulo || !rol) return { note: 'intentó crear una tarea', result: 'Faltan el título o un rol válido.' };
-        const who = text(args.asignar_a, 40) ? byName(text(args.asignar_a, 40)) : undefined;
+        const named = text(args.asignar_a, 40) ? byName(text(args.asignar_a, 40)) : undefined;
+        // Work of one role handed to someone of another, while that role is in the team: it goes to
+        // them instead (the least loaded), not to whoever happened to be named.
+        const fits = st.workers.filter((w) => w.role === rol && w.enabled);
+        const load = (w: Worker) => st.tasks.filter((t) => t.assigneeId === w.id && t.status !== 'done').length;
+        const who = named && named.role !== rol && fits.length ? [...fits].sort((a, b) => load(a) - load(b))[0] : named;
         const { note, result } = addTask({ title: titulo, role: rol, hours: Number(args.horas), ongoing: args.continua === true || args.continua === 'true', who });
-        return { note, result };
+        return { note, result: who !== named && named ? `${result} (Es de ${ROLES[rol].label}: se la he dado a ${who!.name}, no a ${named.name}.)` : result };
       }
       case 'asignar_tarea': {
         if (!manages(me)) return { note: 'intentó asignar una tarea', result: 'No puedes asignar tareas.' };
@@ -1080,6 +1196,26 @@ export async function useTool(me: Worker, c: Conversation | null, name: string, 
       }
       case 'buscar_web':
         return await searchWeb(me, args);
+      case 'ver_guia_estilo':
+        return { note: 'miró la guía de estilo', result: guideText() };
+      case 'revisar_imagen':
+        return await reviewImage(me, args);
+      case 'generar_imagen': {
+        // Only for work that's about pictures: a task that asks for them.
+        const on = [task(me.taskId), ...ongoingOf(me)].filter((x) => !!x);
+        if (!on.some((x) => visualTask(x!.title))) return { note: 'quiso generar una imagen', result: 'NO generada: solo generas imágenes cuando el propietario te lo pide o tu tarea consiste en hacerlas.' };
+        const r = await drawFor(args);
+        // Made while working: they land in your chat with them, like any delivery.
+        if (r.files.length) {
+          const chat = (me.chat ??= { lines: [], pending: false, thinking: null });
+          const t = task(me.taskId);
+          chat.lines.push({ at: Date.now(), speaker: me.id, text: t ? `Te dejo lo que he hecho para «${t.title}».` : 'Te dejo estas imágenes.', tools: [], files: r.files });
+          if (chat.lines.length > 40) chat.lines.splice(0, chat.lines.length - 40);
+          chat.unread = (chat.unread ?? 0) + 1;
+          notify('change');
+        }
+        return { note: r.note, result: r.result };
+      }
       case 'leer_web': {
         const page = await readPage(text(args.url, 600));
         // What a web says could be trying to steer them: writing in your apps waits for you a while.
@@ -1096,13 +1232,16 @@ export async function useTool(me: Worker, c: Conversation | null, name: string, 
         const t = task(typeof args.tarea_id === 'string' ? args.tarea_id : me.taskId);
         if (t && t.status === 'doing' && !t.ongoing) {
           setStatus(t.id, 'blocked');
-          t.blockReason = 'En pausa: espera tu respuesta';
+          t.blockReason = `Espera tu respuesta: ${need.slice(0, 160)}`;
         }
-        asks.push({ workerId: me.id, need, kind: args.tipo === 'conector' ? 'connector' : 'information', taskId: t?.id ?? null });
+        // Straight to the owner, in their chat with you (and «Para ti»): the moment you open it, you see it.
+        addQuestion(me, null, { workerId: me.id, need, kind: args.tipo === 'conector' ? 'connector' : 'information', taskId: t?.id ?? null }, need);
+        // Their boss knows, so they don't hand them anything that depends on it meanwhile.
         const boss = worker(me.reportsTo);
+        if (boss) remember(boss, `${me.name} tiene${t ? ` «${t.title}»` : ' su trabajo'} en pausa: necesita del propietario ${need}`);
         return {
-          note: `pausó su tarea y pidió ayuda${boss ? ` a ${boss.name}` : ''}`,
-          result: boss ? `Tarea en pausa. Irás a contárselo a ${boss.name} en cuanto podáis.` : 'Tarea en pausa. Se lo preguntas tú directamente a la persona para la que trabajáis.',
+          note: 'pausó su tarea y te preguntó lo que le falta',
+          result: 'Tarea en pausa: tu duda ya le ha llegado al propietario, en tu chat con él. Sigues en cuanto conteste.',
         };
       }
       case 'ver_calendario': {

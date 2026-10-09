@@ -6,7 +6,7 @@
 import { DEFAULT_LOOK, type Look } from './look';
 import type { ChangeKind, CommandName, EventInput, TaskInput, WorkerInput } from './ops';
 import type { WorkerAi } from './settings';
-import type { ChatFile, SimState, Task, TaskStatus, Worker } from './types';
+import type { AgentProfile, ChatFile, SimState, Task, TaskStatus, Worker } from './types';
 
 export type { ChangeKind } from './ops';
 type Listener = (kind: ChangeKind) => void;
@@ -102,13 +102,15 @@ export async function api<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'DEL
 }
 
 /** Sends a file for the chat; the server keeps it and says what it is. */
-export async function upload(file: File, onProgress?: (part: number) => void): Promise<ChatFile> {
+export async function upload(file: File, onProgress?: (part: number) => void, palette?: { hex: string; share: number }[]): Promise<ChatFile> {
   // XHR rather than fetch: it reports how far the upload has gone.
   return new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
     x.open('POST', '/api/files');
     x.setRequestHeader('x-oficina-token', token);
     x.setRequestHeader('x-file-name', encodeURIComponent(file.name));
+    // A picture's measured colours, in case it becomes a style reference.
+    if (palette?.length) x.setRequestHeader('x-file-palette', encodeURIComponent(JSON.stringify(palette)));
     x.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
     x.onload = () => {
       let body: (ChatFile & { error?: string }) | null = null;
@@ -159,9 +161,11 @@ export function connect(): Promise<void> {
         const msg = JSON.parse(e.data as string) as
           | { type: 'state'; kind: ChangeKind; state: SimState }
           | { type: 'refused'; text: string }
-          | { type: 'project' };
+          | { type: 'project' }
+          | { type: 'refs' };
         if (msg.type === 'refused') return onRefused(msg.text);
         if (msg.type === 'project') return void document.dispatchEvent(new Event('project-changed'));
+        if (msg.type === 'refs') return void document.dispatchEvent(new Event('refs-changed'));
         if (msg.type !== 'state') return;
         adopt(msg.state);
         notify(msg.kind);
@@ -199,6 +203,8 @@ export const setWorking = (on: boolean) => send('setWorking', on);
 export const setOfficeInfo = (agency: string, project: string) => send('setOfficeInfo', agency, project);
 export const addWorker = (input: WorkerInput) => send('addWorker', input);
 export const updateWorker = (id: string, input: WorkerInput) => send('updateWorker', id, input);
+export const setProfile = (id: string, profile: AgentProfile | null) => send('setProfile', id, profile);
+export const ownerTalk = (convId: string, text: string) => send('ownerTalk', convId, text);
 export const setBoss = (id: string, bossId: string) => send('setBoss', id, bossId);
 export const callSkeptic = () => send('callSkeptic');
 export const setWorkerAi = (id: string, patch: Partial<WorkerAi>) => send('setWorkerAi', id, patch);
@@ -213,6 +219,7 @@ export const callMeeting = () => send('callMeeting');
 export const ownerSay = (text: string) => send('ownerSay', text);
 export const ownerChat = (workerId: string, text: string, files: string[] = []) => send('ownerChat', workerId, text, files);
 export const resetChat = (workerId: string) => send('resetChat', workerId);
+export const readChat = (workerId: string) => send('readChat', workerId);
 export const placeTask = (taskId: string, workerId: string | null, order: string[]) => send('placeTask', taskId, workerId, order);
 export const deleteChatArchive = (workerId: string, at: number) => send('deleteChatArchive', workerId, at);
 export const endMeeting = () => send('endMeeting');

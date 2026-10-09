@@ -381,7 +381,8 @@ export async function useAppTool(me: Worker, name: string, args: Record<string, 
         note: `buscó cómo hacerlo en ${appName(app)}`,
         result: tools
           .map((t) => `${t.slug} (${reads(t.slug, t.tags) ? 'lee' : conn.access === 'read' ? 'escribe: NO permitido' : conn.access === 'ask' ? 'escribe: con permiso' : 'escribe'}): ${t.description.replace(/\s+/g, ' ').slice(0, 200)}\nDatos:\n${shape(t.parameters)}`)
-          .join('\n\n'),
+          .join('\n\n')
+          .concat(`\n\nSi ninguna hace exactamente lo que te piden, ${appName(app)} no lo permite: dilo así, sin pedir IDs, enlaces ni permisos.`),
       };
     }
     if (name === 'usar_accion') {

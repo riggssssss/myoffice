@@ -79,10 +79,22 @@ export function saveFile(name: string, bytes: Buffer): ChatFile {
   const file: ChatFile = { id: `f${randomBytes(12).toString('hex')}`, name: cleanName(name, type), type, size: bytes.length, kind: TYPES[type].kind };
   writeFileSync(join(dir(), file.id), bytes, { mode: 0o600 });
   const all = [file, ...index()];
-  // The oldest go once there are too many.
-  for (const old of all.slice(KEEP)) rmSync(join(dir(), old.id), { force: true });
-  setJson('files:index', all.slice(0, KEEP));
+  // The oldest go once there are too many; pinned ones (style references) stay.
+  const pinned = pins();
+  const gone = new Set(all.filter((f) => !pinned.has(f.id)).slice(KEEP).map((f) => f.id));
+  for (const id of gone) rmSync(join(dir(), id), { force: true });
+  setJson('files:index', all.filter((f) => !gone.has(f.id)));
   return file;
+}
+
+const pins = () => new Set(getJson<string[]>('files:pinned') ?? []);
+
+/** Keeps a file whatever happens to the rest (a style reference), or lets it go again. */
+export function pinFile(id: string, on: boolean): void {
+  const p = pins();
+  if (on) p.add(id);
+  else p.delete(id);
+  setJson('files:pinned', [...p]);
 }
 
 /** A document an agent writes for you (text: Markdown, CSV, plain text or JSON). */

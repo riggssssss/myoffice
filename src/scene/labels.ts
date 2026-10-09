@@ -12,6 +12,7 @@ interface Tag {
   bar: HTMLElement;
   task: HTMLElement;
   name: HTMLElement;
+  badge: HTMLElement;
   lastIconKey: string;
   bubble: HTMLButtonElement;
   bubbleKey: string;
@@ -46,6 +47,7 @@ export class Labels {
         <span class="tag-row">
           <span class="tag-icon"></span>
           <span class="tag-name"></span>
+          <span class="tag-badge num" hidden></span>
         </span>
         <span class="tag-task"></span>
         <span class="tag-bar"><i></i></span>`;
@@ -84,6 +86,7 @@ export class Labels {
         bar: el.querySelector('.tag-bar i')!,
         task: el.querySelector('.tag-task')!,
         name: el.querySelector('.tag-name')!,
+        badge: el.querySelector('.tag-badge')!,
         lastIconKey: '',
         bubble,
         bubbleKey: '',
@@ -179,9 +182,16 @@ export class Labels {
       tag.el.classList.toggle('has-task', !!shown);
       tag.bar.style.transform = fill(pct);
       tag.task.textContent = shown ? shown.title : ACTIVITY_LABEL[w.activity];
+      // Messages for you in their chat: a count over their head until you open it.
+      const unread = w.chat?.unread ?? 0;
+      if (String(unread) !== tag.badge.textContent || tag.badge.hidden !== !unread) {
+        tag.badge.textContent = unread > 9 ? '9+' : String(unread);
+        tag.badge.hidden = !unread;
+        tag.el.classList.toggle('has-unread', unread > 0);
+      }
       tag.el.setAttribute(
         'aria-label',
-        `${w.name}, ${ACTIVITY_LABEL[w.activity]}${shown ? `: ${shown.title}, ${Math.round(pct)}%` : ''}`,
+        `${w.name}, ${ACTIVITY_LABEL[w.activity]}${shown ? `: ${shown.title}, ${Math.round(pct)}%` : ''}${unread ? `. ${unread} mensaje${unread > 1 ? 's' : ''} para ti` : ''}`,
       );
     }
   }

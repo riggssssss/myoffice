@@ -1,171 +1,279 @@
-import { ROLES, ROLE_ORDER } from '../sim/seed';
-import { queueOf } from '../sim/ops';
-import { getState, worker } from '../sim/store';
-import type { RoleId, Task, TaskStatus, WorkRequest } from '../sim/types';
-import { bar, esc, pct, roleDot, stamp } from './dom';
+import { ROLES } from '../sim/seed';
+import { getState, placeTask, select, setStatus, worker } from '../sim/store';
+import type { Task, Worker } from '../sim/types';
+import { bar, esc, pct, stamp } from './dom';
 import { linkDossier } from './dossier';
 import { icon } from './icons';
 import { openTaskDialog } from './taskDialog';
 import { kpis } from './topbar';
 
-const GROUPS: { status: TaskStatus; title: string; empty: string }[] = [
-  { status: 'blocked', title: 'Bloqueadas', empty: 'Nada bloqueado ahora mismo.' },
-  { status: 'doing', title: 'En curso', empty: 'Nadie está trabajando en ninguna tarea.' },
-  { status: 'review', title: 'En revisión', empty: 'Nada esperando revisión.' },
-  { status: 'backlog', title: 'Pendientes', empty: 'No hay tareas pendientes.' },
-  { status: 'done', title: 'Hechas', empty: 'Aún no se ha terminado nada.' },
-];
+/**
+ * Tasks, person by person: each one's line in the order they'll do it. The first is what they're
+ * on now; drag to reorder (or to hand it to someone else) and whatever ends up first becomes the
+ * active one. What goes back keeps its progress. A task opens in place for its details.
+ */
 
-let filter: RoleId | 'all' = 'all';
+/** Tasks opened in place (kept across redraws). */
+const open = new Set<string>();
 let doneOpen = false;
+/** The task being dragged, if any. */
+let dragging: string | null = null;
 
-/** Right-hand side of an ongoing job: no percentage, just how recent its last delivery is. */
-function ongoingSide(t: Task): string {
-  const last = t.notes[t.notes.length - 1];
-  return `<span class="task-ongoing">${icon.ongoing(14)}<span class="num">${last ? stamp(last.at) : 'continua'}</span></span>`;
+const unfinished = (t: Task) => t.status === 'backlog' || t.status === 'doing' || t.status === 'blocked';
+
+/** Someone's line: what they're on first, then their queue in order. */
+function lineOf(w: Worker, tasks: Task[]): Task[] {
+  const mine = tasks.filter((t) => t.assigneeId === w.id && !t.ongoing && unfinished(t));
+  const current = mine.find((t) => t.id === w.taskId);
+  const rest = mine.filter((t) => t !== current).sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || a.createdAt - b.createdAt);
+  return current ? [current, ...rest] : rest;
 }
 
-function row(t: Task): string {
-  const who = worker(t.assigneeId);
-  const value = t.progress;
-  if (t.ongoing) {
-    return `
-    <li>
-      <button class="task task-${t.status} task-is-ongoing" type="button" data-task="${t.id}" data-key="task-${t.id}">
-        <span class="task-main">
-          <span class="task-title">${esc(t.title)}</span>
-          <span class="meta">${roleDot(t.role)}${ROLES[t.role].label} · ${who ? esc(who.name) : '<span class="muted">Sin asignar</span>'} · ${
-            t.status === 'done' ? 'parada' : `${t.notes.length} entrega${t.notes.length === 1 ? '' : 's'}`
-          }</span>
-          ${t.status === 'blocked' && t.blockReason ? `<span class="meta danger">${esc(t.blockReason)}</span>` : ''}
-        </span>
-        ${t.status === 'done' ? `<span class="task-done">${icon.stop(16)}</span>` : ongoingSide(t)}
-      </button>
-    </li>`;
-  }
-  const queued = t.status === 'backlog' && who;
-  const place = queued ? queueOf(getState().tasks, who).findIndex((x) => x.id === t.id) + 1 : 0;
-  const assignee = who ? (queued ? `en cola de ${esc(who.name)}${place ? ` (n.º ${place})` : ''}` : esc(who.name)) : '<span class="muted">Sin asignar</span>';
+const face = (w: Worker) => `<span class="talk-dot" style="--role:${ROLES[w.role].color}" aria-hidden="true">${esc(w.name.charAt(0))}</span>`;
+/** Internal ids (t33) mean nothing to you. */
+const plain = (s: string) => s.replace(/\(?\bt\d{1,6}\b\)?:?\s?/g, '').replace(/\s{2,}/g, ' ').trim();
+
+// ---------------------------------------------------------------- one task
+
+function details(t: Task, line: Task[], laneId: string | null): string {
+  const i = line.indexOf(t);
+  const owner = worker(t.assigneeId);
+  const notes = t.notes.slice(-2).reverse();
+  const move = (to: number) => {
+    const order = line.map((x) => x.id).filter((id) => id !== t.id);
+    order.splice(to, 0, t.id);
+    return order.join(',');
+  };
   return `
-    <li>
-      <button class="task task-${t.status}" type="button" data-task="${t.id}" data-key="task-${t.id}">
-        <span class="task-main">
-          <span class="task-title">${esc(t.title)}</span>
-          <span class="meta">${roleDot(t.role)}${ROLES[t.role].label} · ${assignee} · ${t.estimate} h</span>
-          ${t.status === 'blocked' && t.blockReason ? `<span class="meta danger">${esc(t.blockReason)}</span>` : ''}
-        </span>
-        ${t.status === 'done' ? `<span class="task-done">${icon.check(16)}</span>` : `<span class="task-progress">${bar(t.id, value)}<span class="num" data-pct="${t.id}">${pct(value)}</span></span>`}
-      </button>
+    <div class="tq-more">
+      ${t.status === 'blocked' && t.blockReason ? `<p class="tq-block">${icon.alert(14)}<span>${esc(plain(t.blockReason))}</span></p>` : ''}
+      ${
+        notes.length
+          ? `<ol class="tq-notes">${notes
+              .map((n) => `<li><span class="tq-note-head">${esc(worker(n.by)?.name ?? 'Alguien')} · <span class="num">${stamp(n.at)}</span></span><span class="tq-note-text">${linkDossier(esc(plain(n.text)))}</span></li>`)
+              .join('')}</ol>`
+          : `<p class="tq-quiet">${t.status === 'review' ? 'Esperando revisión.' : t.progress > 0 ? 'Sin notas de avance.' : 'Aún sin empezar.'}</p>`
+      }
+      <p class="tq-facts">${ROLES[t.role].label} · ${t.ongoing ? 'continua' : `${t.estimate} h estimadas`} · creada ${stamp(t.createdAt)}${t.notes.length > 2 ? ` · ${t.notes.length} entregas` : ''}</p>
+      <div class="tq-actions">
+        <button class="btn btn-sm" type="button" data-tq-edit="${t.id}">${icon.edit(13)}Editar</button>
+        ${t.status === 'blocked' ? `<button class="btn btn-sm" type="button" data-tq-status="${t.id}" data-to="doing">Desbloquear</button>` : t.status === 'doing' ? `<button class="btn btn-sm btn-ghost" type="button" data-tq-status="${t.id}" data-to="blocked">Bloquear</button>` : ''}
+        ${t.status === 'review' ? `<button class="btn btn-sm" type="button" data-tq-status="${t.id}" data-to="done">${icon.tick(13)}Dar por hecha</button>` : ''}
+        ${
+          laneId && i >= 0 && line.length > 1
+            ? `<span class="tq-move">
+                <button class="btn btn-icon btn-sm btn-ghost" type="button" data-tq-place="${t.id}" data-lane="${laneId}" data-order="${move(Math.max(0, i - 1))}" ${i === 0 ? 'disabled' : ''} aria-label="Subir en la cola">${icon.send(13)}</button>
+                <button class="btn btn-icon btn-sm btn-ghost tq-down" type="button" data-tq-place="${t.id}" data-lane="${laneId}" data-order="${move(i + 1)}" ${i === line.length - 1 ? 'disabled' : ''} aria-label="Bajar en la cola">${icon.send(13)}</button>
+              </span>`
+            : ''
+        }
+        ${owner && !t.ongoing && unfinished(t) ? `<button class="btn btn-sm btn-ghost" type="button" data-tq-place="${t.id}" data-lane="" data-order="">Quitar a ${esc(owner.name)}</button>` : ''}
+      </div>
+    </div>`;
+}
+
+function row(t: Task, line: Task[], laneId: string | null, pos: 'now' | number | 'review' | 'ongoing' | 'loose'): string {
+  const isOpen = open.has(t.id);
+  const draggable = pos !== 'review' && pos !== 'ongoing';
+  const blocked = t.status === 'blocked';
+  const lead =
+    pos === 'now'
+      ? `<span class="tq-pos is-now" title="Lo que hace ahora">${blocked ? icon.alert(13) : '<i></i>'}</span>`
+      : pos === 'ongoing'
+        ? `<span class="tq-pos is-loop">${icon.ongoing(13)}</span>`
+        : pos === 'review'
+          ? `<span class="tq-pos is-review">${icon.check(13)}</span>`
+          : typeof pos === 'number'
+            ? `<span class="tq-pos num">${pos}</span>`
+            : '<span class="tq-pos"><i></i></span>';
+  const sub = blocked
+    ? `<span class="tq-sub is-bad">Bloqueada${t.blockReason ? ` · ${esc(plain(t.blockReason))}` : ''}</span>`
+    : pos === 'now'
+      ? `<span class="tq-sub">Ahora${t.notes.length ? ` · último avance ${stamp(t.notes[t.notes.length - 1].at)}` : ''}</span>`
+      : pos === 'ongoing'
+        ? `<span class="tq-sub">Continua · ${t.notes.length ? `entregó ${stamp(t.notes[t.notes.length - 1].at)}` : 'sin entregas aún'}</span>`
+        : pos === 'review'
+          ? '<span class="tq-sub">En revisión</span>'
+          : pos === 'loose'
+            ? `<span class="tq-sub">${ROLES[t.role].label} · ${t.estimate} h</span>`
+            : t.progress > 0
+              ? `<span class="tq-sub">En pausa · retoma al ${pct(t.progress)}</span>`
+              : '';
+  return `
+    <li class="tq tq-${t.status}${isOpen ? ' is-open' : ''}${pos === 'now' ? ' is-now' : ''}" data-tq="${t.id}" data-key="tq-${t.id}" ${draggable ? 'draggable="true"' : ''}>
+      <div class="tq-row">
+        ${draggable ? `<span class="tq-grip" aria-hidden="true">${icon.grip(14)}</span>` : '<span class="tq-grip"></span>'}
+        ${lead}
+        <button class="tq-main" type="button" data-tq-open="${t.id}" aria-expanded="${isOpen}">
+          <span class="tq-title">${esc(plain(t.title))}</span>
+          ${sub}
+        </button>
+        ${
+          t.ongoing || pos === 'review' || (pos !== 'now' && t.progress === 0)
+            ? ''
+            : `<span class="tq-side">${bar(t.id, t.progress)}<span class="num" data-pct="${t.id}">${pct(t.progress)}</span></span>`
+        }
+      </div>
+      ${isOpen ? details(t, line, laneId) : ''}
     </li>`;
 }
+
+// ---------------------------------------------------------------- lines
+
+function lane(w: Worker, tasks: Task[]): string {
+  const line = lineOf(w, tasks);
+  const review = tasks.filter((t) => t.assigneeId === w.id && t.status === 'review');
+  const ongoing = tasks.filter((t) => t.assigneeId === w.id && t.ongoing && t.status !== 'done');
+  const blocked = line.filter((t) => t.status === 'blocked').length;
+  return `
+    <section class="lane${w.enabled ? '' : ' is-off'}" data-lane-of="${w.id}" data-key="lane-${w.id}">
+      <header class="lane-head">
+        ${face(w)}
+        <span class="lane-who"><span class="lane-name">${esc(w.name)}</span><span class="meta">${esc(w.title)}</span></span>
+        <span class="lane-count">${blocked ? `<span class="lane-alert">${blocked} bloqueada${blocked > 1 ? 's' : ''}</span>` : ''}<span class="num">${line.length}</span></span>
+      </header>
+      <ol class="tq-list" data-drop="${w.id}">
+        ${line.map((t, i) => row(t, line, w.id, i === 0 ? 'now' : i + 1)).join('')}
+        ${line.length ? '' : '<li class="tq-empty">Sin tareas en cola. Arrastra una aquí.</li>'}
+      </ol>
+      ${review.length || ongoing.length ? `<ul class="tq-list tq-extra">${[...review.map((t) => row(t, line, w.id, 'review')), ...ongoing.map((t) => row(t, line, w.id, 'ongoing'))].join('')}</ul>` : ''}
+    </section>`;
+}
+
+// ---------------------------------------------------------------- the tab
 
 export function renderTasks(): string {
   const s = getState();
-  const tasks = s.tasks.filter((t) => filter === 'all' || t.role === filter);
-  const chips = (['all', ...ROLE_ORDER] as const)
-    .map(
-      (r) =>
-        `<button type="button" class="chip" data-filter="${r}" aria-pressed="${filter === r}" data-key="f-${r}">${
-          r === 'all' ? 'Todas' : `${roleDot(r)}${ROLES[r].label}`
-        }</button>`,
-    )
-    .join('');
-
-  // Ongoing jobs that are running get their own group; stopped ones end up with the done.
-  const running = (t: Task) => t.ongoing && t.status !== 'done';
-  const ongoing = tasks.filter(running);
-  const ongoingGroup = ongoing.length
-    ? `<section class="section group group-ongoing">
-        <h2 class="section-title">Continuas <span class="count">${ongoing.length}</span></h2>
-        <p class="section-note">No tienen final: siguen, con una entrega cada rato, hasta que las pares.</p>
-        <ul class="tasks">${ongoing.map(row).join('')}</ul></section>`
-    : '';
-  const groups = GROUPS.map((g) => {
-    const list = tasks
-      .filter((t) => t.status === g.status && !running(t))
-      .sort((a, b) =>
-        g.status === 'done' ? (b.doneAt ?? 0) - (a.doneAt ?? 0) : b.progress - a.progress || a.createdAt - b.createdAt,
-      );
-    const unassigned = g.status === 'backlog' && list.some((t) => !t.assigneeId);
-    const note = unassigned
-      ? `<p class="section-note">${s.ai.state === 'off' ? 'El Organizador repartirá las pendientes cuando tenga la IA conectada.' : 'El Organizador las repartirá en sus rondas.'} Puedes asignarlas o corregirlas tú cuando quieras.</p>`
-      : '';
-    const body = list.length ? `${note}<ul class="tasks">${list.map(row).join('')}</ul>` : `<p class="section-note">${g.empty}</p>`;
-    if (g.status === 'done') {
-      return `<details class="section group" data-key="done-group" ${doneOpen ? 'open' : ''}>
-        <summary class="section-title">${g.title} <span class="count">${list.length}</span></summary>${body}</details>`;
-    }
-    if (g.status === 'blocked' && !list.length) return '';
-    return `<section class="section group group-${g.status}">
-      <h2 class="section-title">${g.title} <span class="count">${list.length}</span></h2>${body}</section>`;
-  }).join('');
-
+  const tasks = s.tasks;
   const k = kpis();
+  const people = s.workers.filter((w) => tasks.some((t) => t.assigneeId === w.id && t.status !== 'done'));
+  const free = s.workers.filter((w) => !people.includes(w) && w.enabled);
+  const loose = tasks.filter((t) => !t.assigneeId && unfinished(t)).sort((a, b) => a.createdAt - b.createdAt);
+  const done = tasks.filter((t) => t.status === 'done').sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0));
+  const summary = [
+    `<span><b class="num">${k.doing}</b> en curso</span>`,
+    k.blocked ? `<span class="is-bad"><b class="num">${k.blocked}</b> bloqueada${k.blocked > 1 ? 's' : ''}</span>` : '',
+    k.review ? `<span><b class="num">${k.review}</b> en revisión</span>` : '',
+    `<span><b class="num">${k.doneToday}</b> hecha${k.doneToday === 1 ? '' : 's'} hoy</span>`,
+  ]
+    .filter(Boolean)
+    .join('');
   return `
-    <dl class="task-stats">
-      <div><dt>Hechas hoy</dt><dd class="num">${k.doneToday}</dd></div>
-      <div><dt>En curso</dt><dd class="num">${k.doing}</dd></div>
-      <div class="${k.blocked ? 'is-alert' : ''}"><dt>Bloqueadas</dt><dd class="num">${k.blocked}</dd></div>
-      <div><dt>En revisión</dt><dd class="num">${k.review}</dd></div>
-    </dl>
-    ${requests()}
-    <div class="toolbar">
-      <div class="chips" role="group" aria-label="Filtrar por rol">${chips}</div>
-      <button class="btn btn-primary" type="button" data-new data-key="new-task">${icon.plus(15)}Nueva tarea</button>
+    <div class="tq-top">
+      <p class="tq-summary">${summary}</p>
+      <button class="btn btn-primary btn-sm" type="button" data-new data-key="new-task">${icon.plus(14)}Nueva tarea</button>
     </div>
-    ${ongoingGroup}
-    ${groups}`;
+    ${
+      people.length || loose.length
+        ? `<p class="tq-hint">Arrastra para cambiar el orden: la primera de cada persona es la que hace ahora. Lo que vuelve a la cola guarda su avance.</p>`
+        : `<p class="section-note">No hay tareas. Crea una o pídeselo a Organización.</p>`
+    }
+    ${people.map((w) => lane(w, tasks)).join('')}
+    ${
+      loose.length
+        ? `<section class="lane is-loose" data-key="lane-loose">
+            <header class="lane-head"><span class="lane-who"><span class="lane-name">Sin asignar</span><span class="meta">${s.ai.state === 'off' ? 'Organización las repartirá cuando tenga la IA' : 'Organización las reparte en sus rondas; arrástralas a alguien si quieres'}</span></span><span class="lane-count"><span class="num">${loose.length}</span></span></header>
+            <ol class="tq-list" data-drop="">${loose.map((t) => row(t, loose, null, 'loose')).join('')}</ol>
+          </section>`
+        : ''
+    }
+    ${free.length ? `<p class="tq-free">Sin tareas: ${free.map((w) => `<button class="link" type="button" data-tq-free="${w.id}">${esc(w.name)}</button>`).join(', ')}.</p>` : ''}
+    ${
+      done.length
+        ? `<details class="tq-done" data-key="done-group" ${doneOpen ? 'open' : ''}>
+            <summary>${icon.check(14)}Hechas <span class="num">${done.length}</span></summary>
+            <ul class="tq-done-list">${done
+              .slice(0, 30)
+              .map((t) => `<li><button type="button" data-tq-edit="${t.id}"><span>${esc(plain(t.title))}</span><span class="meta">${esc(worker(t.assigneeId)?.name ?? '—')} · <span class="num">${t.doneAt ? stamp(t.doneAt) : ''}</span></span></button></li>`)
+              .join('')}</ul>
+          </details>`
+        : ''
+    }`;
 }
 
-const REQUEST_STATE: Record<WorkRequest['status'], string> = {
-  waiting: 'Esperando',
-  working: 'Preparando las tareas',
-  done: 'Hecho',
-  failed: 'No se pudo',
-};
+// ---------------------------------------------------------------- doing things
 
-/** Your recent requests to the organiser and what came of them. */
-function requests(): string {
-  const s = getState();
-  const recent = s.requests.filter((r) => r.status !== 'done' || Date.now() - (r.doneAt ?? 0) < 6 * 3600_000).slice(0, 5);
-  if (!recent.length) return '';
-  const organizer = s.workers.find((w) => w.role === 'organizer');
-  return `
-    <section class="section">
-      <h2 class="section-title">Encargos</h2>
-      <ul class="requests">${recent
-        .map(
-          (r) => `
-          <li class="request request-${r.status}" data-key="req-${r.id}">
-            <p class="request-text">«${esc(r.text)}»</p>
-            <p class="meta">${r.status === 'working' ? '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span> ' : ''}${REQUEST_STATE[r.status]}${
-              r.status === 'working' && r.tool ? ` · ${esc(organizer?.name ?? '')} está ${esc(r.tool)}` : ''
-            }${r.status === 'waiting' && !(s.working && organizer?.enabled) ? ` · ${esc(organizer?.name ?? 'Organización')} lo verá al llegar` : ''} · <span class="num">${stamp(r.at)}</span></p>
-            ${r.tools.length ? `<ul class="chat-tools">${r.tools.map((t) => `<li>${linkDossier(esc(t.note))}</li>`).join('')}</ul>` : ''}
-            ${r.reply ? `<p class="request-reply"><strong>${esc(organizer?.name ?? 'Organización')}:</strong> ${linkDossier(esc(r.reply))}</p>` : ''}
-          </li>`,
-        )
-        .join('')}</ul>
-    </section>`;
+/** The line a drop lands in, with the dragged task placed where the pointer is. */
+function dropOrder(list: HTMLElement, y: number): string[] {
+  const rows = [...list.querySelectorAll<HTMLElement>(':scope > li.tq')].filter((li) => li.dataset.tq !== dragging);
+  const at = rows.findIndex((li) => {
+    const r = li.getBoundingClientRect();
+    return y < r.top + r.height / 2;
+  });
+  const ids = rows.map((li) => li.dataset.tq!);
+  ids.splice(at < 0 ? ids.length : at, 0, dragging!);
+  return ids;
+}
+
+function marker(list: HTMLElement | null, y: number): void {
+  document.querySelectorAll('.tq.is-drop-before, .tq.is-drop-after, .tq-list.is-drop-end').forEach((el) => el.classList.remove('is-drop-before', 'is-drop-after', 'is-drop-end'));
+  if (!list) return;
+  const rows = [...list.querySelectorAll<HTMLElement>(':scope > li.tq')].filter((li) => li.dataset.tq !== dragging);
+  const at = rows.find((li) => {
+    const r = li.getBoundingClientRect();
+    return y < r.top + r.height / 2;
+  });
+  if (at) at.classList.add('is-drop-before');
+  else list.classList.add('is-drop-end');
 }
 
 export function bindTasks(el: HTMLElement, rerender: () => void): void {
   el.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
-    const f = target.closest<HTMLElement>('[data-filter]');
-    if (f) {
-      filter = f.dataset.filter as RoleId | 'all';
+    if (target.closest('[data-new]')) return openTaskDialog(null);
+    const ed = target.closest<HTMLElement>('[data-tq-edit]');
+    if (ed) return openTaskDialog(ed.dataset.tqEdit!);
+    const st = target.closest<HTMLElement>('[data-tq-status]');
+    if (st) return setStatus(st.dataset.tqStatus!, st.dataset.to as Task['status']);
+    const pl = target.closest<HTMLElement>('[data-tq-place]');
+    if (pl) {
+      const order = pl.dataset.order ? pl.dataset.order.split(',') : [];
+      placeTask(pl.dataset.tqPlace!, pl.dataset.lane || null, order);
+      return;
+    }
+    const fr = target.closest<HTMLElement>('[data-tq-free]');
+    if (fr) return select(fr.dataset.tqFree!);
+    const op = target.closest<HTMLElement>('[data-tq-open]');
+    if (op) {
+      const id = op.dataset.tqOpen!;
+      if (!open.delete(id)) open.add(id);
       return rerender();
     }
-    if (target.closest('[data-new]')) return openTaskDialog(null, filter === 'all' ? undefined : filter);
-    const t = target.closest<HTMLElement>('[data-task]');
-    if (t) openTaskDialog(t.dataset.task!);
   });
   el.addEventListener(
     'toggle',
     (e) => {
-      if ((e.target as HTMLElement).matches('details.group')) doneOpen = (e.target as HTMLDetailsElement).open;
+      if ((e.target as HTMLElement).matches('details.tq-done')) doneOpen = (e.target as HTMLDetailsElement).open;
     },
     true,
   );
+  el.addEventListener('dragstart', (e) => {
+    const li = (e.target as HTMLElement).closest<HTMLElement>('li.tq[draggable="true"]');
+    if (!li) return;
+    dragging = li.dataset.tq!;
+    e.dataTransfer!.effectAllowed = 'move';
+    e.dataTransfer!.setData('text/plain', dragging);
+    // The row stays in place, faded, while its ghost travels.
+    requestAnimationFrame(() => li.classList.add('is-dragging'));
+  });
+  el.addEventListener('dragover', (e) => {
+    if (!dragging) return;
+    const list = (e.target as HTMLElement).closest<HTMLElement>('[data-drop]');
+    if (!list) return marker(null, 0);
+    e.preventDefault();
+    e.dataTransfer!.dropEffect = 'move';
+    marker(list, e.clientY);
+  });
+  el.addEventListener('drop', (e) => {
+    const list = (e.target as HTMLElement).closest<HTMLElement>('[data-drop]');
+    if (!dragging || !list) return;
+    e.preventDefault();
+    const lane = list.dataset.drop || null;
+    placeTask(dragging, lane, lane ? dropOrder(list, e.clientY) : []);
+  });
+  el.addEventListener('dragend', () => {
+    dragging = null;
+    marker(null, 0);
+    el.querySelectorAll('.is-dragging').forEach((x) => x.classList.remove('is-dragging'));
+  });
 }

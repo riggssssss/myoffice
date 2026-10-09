@@ -1029,6 +1029,51 @@ function addDesk(slot: number | undefined, near: P): Item | null {
   return item;
 }
 
+/**
+ * Spots for desks inside one room, the house rule's way: columns facing the front, from the back
+ * wall forward (the same offsets DESK_SPOTS uses in the team room).
+ */
+function roomDeskSpots(r: Room): { x: number; z: number; rot: number }[] {
+  const out: { x: number; z: number; rot: number }[] = [];
+  for (let z = r.z0 + 2; z < r.z1 - 0.8; z += 3) for (let x = r.x0 + 2.4; x < r.x1 - 1.2; x += 3.7) out.push({ x, z, rot: 0 });
+  return out;
+}
+
+function deskSpotIn(item: Item, roomId: string): { x: number; z: number; rot: number } | null {
+  const r = layoutRoom(roomId);
+  if (!r) return null;
+  const others = saved.items.filter((i) => i.id !== item.id);
+  const spot = roomDeskSpots(r).find((s) => !placementProblem({ ...item, ...s }, others, saved.rooms));
+  if (spot) return spot;
+  const near = findFreeSpot(item, others, (r.x0 + r.x1) / 2, (r.z0 + r.z1) / 2, 0.6);
+  return near && itemRoom({ ...item, ...near })?.id === roomId ? near : null;
+}
+
+/** An agent's desk inside a given room (a team's), or null if it doesn't fit there. */
+export function addDeskInRoom(slot: number, roomId: string): Item | null {
+  if (deskBySlot(slot)) return null;
+  const item: Item = { id: `i${saved.nextId}`, kind: 'desk', x: 0, z: 0, rot: 0, slot, decor: slot % 2 ? 'plant' : 'books' };
+  const spot = deskSpotIn(item, roomId);
+  if (!spot) return null;
+  saved.nextId++;
+  Object.assign(item, spot);
+  saved.items.push(item);
+  changed();
+  return item;
+}
+
+/** Moves an agent's existing desk into a room (their team's). False if it doesn't fit. */
+export function moveDeskToRoom(slot: number, roomId: string): boolean {
+  const item = deskBySlot(slot);
+  if (!item) return false;
+  if (itemRoom(item)?.id === roomId) return true;
+  const spot = deskSpotIn(item, roomId);
+  if (!spot) return false;
+  Object.assign(item, spot);
+  changed();
+  return true;
+}
+
 export function duplicateItem(id: string): Item | null {
   const src = layoutItem(id);
   if (!src || KINDS[src.kind].unique || KINDS[src.kind].perWorker) return null;

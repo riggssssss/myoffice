@@ -24,6 +24,8 @@ import { renderFeed } from './feedTab';
 import { openLookEditor } from './lookEditor';
 import { openTaskDialog } from './taskDialog';
 import { openWorkerDialog } from './workerDialog';
+import { openTemplateDialog } from './teamTemplates';
+import { bindStyle, styleChange, styleClick, stylePane } from './stylePane';
 import { agentKey, PROVIDERS, type TextProvider } from '../sim/settings';
 import { modelInput } from './modelInput';
 import { config, openSettingsAt } from './config';
@@ -72,7 +74,10 @@ function renderChart(): string {
   return `
     <div class="toolbar toolbar-row">
       <h2 class="section-title">Organigrama <span class="count">${workers.length}</span></h2>
-      <button class="btn btn-primary" type="button" data-add data-key="add">${icon.userPlus(15)}Añadir agente</button>
+      <span class="toolbar-actions">
+        <button class="btn" type="button" data-templates data-key="templates">${icon.users(15)}Plantillas de equipo</button>
+        <button class="btn btn-primary" type="button" data-add data-key="add">${icon.userPlus(15)}Añadir agente</button>
+      </span>
     </div>
     <div class="org-scroll">
       <div class="org">
@@ -186,13 +191,16 @@ function fixedPlace(w: Worker, boss: Worker | undefined): string {
   return `Responde a ${esc(boss?.name ?? 'dirección')}. Es un puesto fijo.`;
 }
 
-type DetailTab = 'tasks' | 'ai' | 'settings' | 'history';
-const DETAIL_TABS: [DetailTab, string][] = [
+type DetailTab = 'tasks' | 'style' | 'ai' | 'settings' | 'history';
+const ALL_TABS: [DetailTab, string][] = [
   ['tasks', 'Tareas'],
+  ['style', 'Estilo'],
   ['ai', 'IA'],
   ['settings', 'Ajustes'],
   ['history', 'Historial'],
 ];
+/** Estilo only in the art director's file. */
+const tabsOf = (w: Worker | undefined): [DetailTab, string][] => ALL_TABS.filter(([id]) => id !== 'style' || w?.role === 'art');
 let detailTab: DetailTab = 'tasks';
 
 /** A new person selected: their panel opens on Tareas. */
@@ -283,7 +291,7 @@ function tasksPane(w: Worker): string {
         ? `<p class="detail-note">${icon.critique(14)}<span>Pendiente de su bienvenida con ${esc(s.workers.find((o) => o.role === 'interviewer')?.name ?? 'Entrevistas')}, en recepción, en cuanto esté en la oficina.</span></p>`
         : ''
     }
-    ${w.brief ? `<p class="brief brief-top">${esc(w.brief)}</p>` : ''}
+    ${w.profile ? `<p class="brief brief-top">${esc(w.profile.summary)}</p>` : w.brief ? `<p class="brief brief-top">${esc(w.brief)}</p>` : ''}
     ${!isRequired(w) && !deskBySlot(w.desk) ? `<p class="detail-note">${icon.room(14)}<span>Su mesa está por colocar: hazlo en «Editar oficina». Mientras, espera en recepción.</span></p>` : ''}
     ${questionsBlock(w)}
     ${talkBlock(w)}
@@ -334,6 +342,22 @@ function tasksPane(w: Worker): string {
     }`;
 }
 
+/** Their card: what they do, who they are and what they put first (or the interview's note). */
+function profileCard(w: Worker): string {
+  const p = w.profile;
+  if (!p) {
+    return w.brief
+      ? `<p class="section-note">De su entrevista: ${esc(w.brief)}</p>`
+      : '<p class="section-note">Sin ficha: escríbela para que sepa exactamente qué hacer y cómo.</p>';
+  }
+  return `
+    <div class="profile-card">
+      <p class="profile-summary">${esc(p.summary)}</p>
+      ${p.persona ? `<p class="profile-persona">${esc(p.persona)}</p>` : ''}
+      ${p.focus.length ? `<ul class="profile-focus">${p.focus.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : ''}
+    </div>`;
+}
+
 function settingsPane(w: Worker): string {
   const s = getState();
   const boss = worker(w.reportsTo);
@@ -365,8 +389,9 @@ function settingsPane(w: Worker): string {
     </section>
     <section class="section">
       <h3 class="section-title">Persona</h3>
+      ${profileCard(w)}
       <div class="actions">
-        <button class="btn" type="button" data-edit-worker="${w.id}" data-key="edit-worker">${icon.edit(15)}Nombre y puesto</button>
+        <button class="btn" type="button" data-edit-worker="${w.id}" data-key="edit-worker">${icon.edit(15)}${isRequired(w) ? 'Nombre, puesto y perfil' : w.profile ? 'Editar su ficha' : 'Nombre, puesto y ficha'}</button>
         <button class="btn" type="button" data-look-edit="${w.id}" data-key="look">${icon.shirt(15)}Aspecto</button>
         ${
           w.role === 'skeptic'
@@ -476,7 +501,9 @@ function renderDetail(w: Worker): string {
   const partner = worker(w.pairWith);
   const role = ROLES[w.role];
   const open = getState().questions.filter((q) => q.workerId === w.id && q.answer === null).length;
-  const pane = detailTab === 'ai' ? aiSection(w) : detailTab === 'settings' ? settingsPane(w) : detailTab === 'history' ? historyPane(w) : tasksPane(w);
+  if (detailTab === 'style' && w.role !== 'art') detailTab = 'tasks';
+  const pane =
+    detailTab === 'ai' ? aiSection(w) : detailTab === 'settings' ? settingsPane(w) : detailTab === 'history' ? historyPane(w) : detailTab === 'style' ? stylePane(w) : tasksPane(w);
   return `
     <div class="worker" style="--role:${role.color}">
       <header class="worker-head">
@@ -493,7 +520,7 @@ function renderDetail(w: Worker): string {
           ${partner ? `<span class="muted">con ${esc(partner.name)}</span>` : ''}
         </div>
         <div class="worker-tabs" role="tablist" aria-label="${esc(w.name)}">
-          ${DETAIL_TABS.map(
+          ${tabsOf(w).map(
             ([id, label]) =>
               `<button role="tab" type="button" data-detail-tab="${id}" aria-selected="${detailTab === id}" ${detailTab === id ? '' : 'tabindex="-1"'} data-key="dt-${id}">${label}${
                 id === 'tasks' && open ? ` <span class="count is-alert">${open}</span>` : ''
@@ -597,13 +624,16 @@ function confirmRemove(w: Worker): void {
 
 export function bindTeam(el: HTMLElement, rerender: () => void): void {
   bindKeyFields(el, rerender);
+  bindStyle(() => detailTab === 'style' && rerender());
   el.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
+    if (detailTab === 'style' && styleClick(target)) return;
     const talk = target.closest<HTMLElement>('[data-open-talk]');
     if (talk) return document.dispatchEvent(new CustomEvent('open-conversation', { detail: talk.dataset.openTalk }));
     const os = target.closest<HTMLElement>('[data-open-settings]');
     if (os) return openSettingsAt(os.dataset.openSettings as 'ai' | 'mcp');
     if (target.closest('[data-add]')) return openWorkerDialog(null);
+    if (target.closest('[data-templates]')) return openTemplateDialog();
     if (target.closest('[data-call-skeptic]')) return callSkeptic();
     const sel = target.closest<HTMLElement>('[data-select]');
     if (sel) return select(sel.dataset.select!);
@@ -659,7 +689,7 @@ export function bindTeam(el: HTMLElement, rerender: () => void): void {
   el.addEventListener('keydown', (e) => {
     const tab = (e.target as HTMLElement).closest<HTMLElement>('[data-detail-tab]');
     if (!tab || (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft')) return;
-    const ids = DETAIL_TABS.map(([id]) => id);
+    const ids = tabsOf(worker(getSelectedId())).map(([id]) => id);
     detailTab = ids[(ids.indexOf(tab.dataset.detailTab as DetailTab) + (e.key === 'ArrowRight' ? 1 : ids.length - 1)) % ids.length];
     rerender();
     el.querySelector<HTMLElement>(`[data-detail-tab="${detailTab}"]`)?.focus();
@@ -667,6 +697,7 @@ export function bindTeam(el: HTMLElement, rerender: () => void): void {
   });
   el.addEventListener('change', (e) => {
     const t = e.target as HTMLElement;
+    if (styleChange(t)) return;
     const pair = t.closest<HTMLSelectElement>('[data-pair]');
     if (pair) {
       setPair(pair.dataset.pair!, pair.value || null);

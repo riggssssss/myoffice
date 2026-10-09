@@ -1,5 +1,5 @@
 /** Office-wide preferences that aren't secrets. */
-import { DEFAULT_SETTINGS, isProvider, MAX_CHAIN, PROVIDERS, validModel, type AiChoice, type ImageProvider, type Settings } from '../src/sim/settings';
+import { DEFAULT_SETTINGS, IMAGE_QUALITY, isProvider, MAX_CHAIN, PROVIDERS, validModel, type AiChoice, type ImageProvider, type Settings } from '../src/sim/settings';
 import { getJson, setJson } from './db';
 
 export function getSettings(): Settings {
@@ -26,7 +26,7 @@ function cleanChain(v: unknown): AiChoice[] | null {
 }
 
 const num = (v: unknown, min: number, max: number): v is number => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
-const IMAGES: ImageProvider[] = ['none', 'fal', 'recraft'];
+const IMAGES: ImageProvider[] = ['none', 'fal', 'recraft', 'cloudflare'];
 /** Ollama runs on this machine (or one you name): an http(s) address, nothing else. */
 const validUrl = (v: unknown): v is string => {
   if (typeof v !== 'string' || v.length > 200) return false;
@@ -75,11 +75,18 @@ export function patchSettings(patch: unknown): Settings {
     const daily = Number(p.ai.dailyTokens);
     // 0: no cap at all (free plans like NVIDIA's have their own limits anyway).
     if (daily === 0 || num(daily, 10_000, 50_000_000)) next.ai.dailyTokens = Math.round(daily);
+    const pace = Number(p.ai.workPerHour);
+    if ('workPerHour' in p.ai && (pace === 0 || num(pace, 6, 240))) next.ai.workPerHour = Math.round(pace);
     const terse = p.ai.terse as unknown;
     if (terse === true || terse === 'true') next.ai.terse = true;
     else if (terse === false || terse === 'false') next.ai.terse = false;
   }
   if (p.image && IMAGES.includes(p.image.provider)) next.image.provider = p.image.provider;
+  if (p.image && IMAGE_QUALITY.some((q) => q.id === p.image!.quality)) next.image.quality = p.image.quality;
+  if (p.image && 'dailyUsd' in p.image) {
+    const usd = Number(p.image.dailyUsd);
+    if (usd === 0 || num(usd, 0.01, 50)) next.image.dailyUsd = Math.round(usd * 100) / 100;
+  }
   setJson('settings', next);
   return next;
 }

@@ -1,7 +1,7 @@
-import { bossProblem, depthOf, headOf, hireBasis, isRequired, MAX_DEPTH, type WorkerInput } from '../sim/ops';
+import { bossProblem, depthOf, headOf, hireBasis, isRequired, MAX_DEPTH, PROFILE_MAX, type WorkerInput } from '../sim/ops';
 import { REQUIRED_ROLES, ROLE_ORDER, ROLES } from '../sim/seed';
-import { addWorker, askHireIdeas, closeMessage, getState, subscribe, updateWorker, worker } from '../sim/store';
-import type { HireIdea, RoleId } from '../sim/types';
+import { addWorker, api, askHireIdeas, closeMessage, getState, setProfile, subscribe, updateWorker, worker } from '../sim/store';
+import type { AgentDraft, AgentProfile, HireIdea, RoleId } from '../sim/types';
 import { esc } from './dom';
 import { icon } from './icons';
 
@@ -63,7 +63,8 @@ function ideasHtml(list: Pick[], chosen: number): string {
 }
 
 /**
- * Hire someone (`null`) or edit who they are. Who they answer to is changed in the org chart.
+ * Hire someone (`null`) or edit who they are. Hiring starts by telling what they'll do: the head
+ * organises it into their card, and you edit it before they join (or fill it in by hand).
  * `suggested`: a hire an agent proposed, filled in; `onHired` runs once they're in.
  */
 export function openWorkerDialog(id: string | null, suggested?: { role: RoleId; title: string; name: string }, onHired?: () => void): void {
@@ -73,134 +74,238 @@ export function openWorkerDialog(id: string | null, suggested?: { role: RoleId; 
   const fixed = !!w && isRequired(w);
   // Dirección, Organización and the sceptic come with the office, one each.
   const roles = fixed ? [w.role] : ROLE_ORDER.filter((r) => !REQUIRED_ROLES.includes(r));
-  const role: RoleId = w?.role ?? (suggested && roles.includes(suggested.role) ? suggested.role : 'research');
   const d = document.getElementById('task-dialog') as HTMLDialogElement;
 
-  const roleOptions = roles.map((r) => `<option value="${r}" ${r === role ? 'selected' : ''}>${ROLES[r].label}</option>`).join('');
-  // New people can go under anyone with room for one more level below them.
-  const bosses = workers
-    .filter((b) => !b.staff && depthOf(workers, b.id) + 1 <= MAX_DEPTH && (!w || !bossProblem(workers, w.id, b.id)))
-    .map((b) => `<option value="${b.id}" ${b.id === head?.id ? 'selected' : ''}>${esc(b.name)} · ${esc(b.title)}</option>`)
-    .join('');
+  /** What's in the form, kept across steps (each step is drawn anew). */
+  const v = {
+    describe: suggested ? `${suggested.title}` : '',
+    name: w?.name ?? suggested?.name ?? '',
+    role: (w?.role ?? (suggested && roles.includes(suggested.role) ? suggested.role : 'research')) as RoleId,
+    title: w?.title ?? suggested?.title ?? '',
+    boss: head?.id ?? '',
+    summary: w?.profile?.summary ?? '',
+    persona: w?.profile?.persona ?? '',
+    focus: (w?.profile?.focus ?? []).join('\n'),
+  };
+  let step: 'describe' | 'form' = w ? 'form' : 'describe';
+  let organising = false;
+  let problem = '';
+  /** The form came from the AI (it says so, and invites changes). */
+  let drafted = false;
+  let fromMsg: string | null = null;
 
-  d.innerHTML = `
-    <form method="dialog" class="dialog-form" novalidate>
-      <header class="dialog-head">
-        <h2>${w ? `Editar a ${esc(w.name)}` : 'Añadir agente'}</h2>
-        <button class="btn btn-icon" type="button" data-close aria-label="Cerrar">${icon.close(16)}</button>
-      </header>
-      ${w ? '' : '<section class="ideas" id="a-ideas" aria-live="polite" aria-label="Sugeridos para tu proyecto"></section>'}
+  const bossOptions = () =>
+    workers
+      .filter((b) => !b.staff && depthOf(workers, b.id) + 1 <= MAX_DEPTH && (!w || !bossProblem(workers, w.id, b.id)))
+      .map((b) => `<option value="${b.id}" ${b.id === v.boss ? 'selected' : ''}>${esc(b.name)} · ${esc(b.title)}</option>`)
+      .join('');
+
+  const describeStep = () => `
+    <div class="field">
+      <label for="a-describe">Explica qué hará</label>
+      <textarea id="a-describe" data-v="describe" rows="5" maxlength="2000" placeholder="Ej. Alguien que lleve el email marketing: secuencias de bienvenida, newsletter quincenal y medir qué abre la gente. Que responda a quien lleve crecimiento." ${organising ? 'disabled' : ''}>${esc(v.describe)}</textarea>
+      <p class="section-note">${esc(head?.name ?? 'Dirección')} lo organiza en su ficha: puesto, a quién responde, qué hará, cómo es y en qué se centra. Después la revisas y cambias lo que quieras.</p>
+      ${problem ? `<p class="field-error" role="alert">${esc(problem)}</p>` : ''}
+    </div>
+    ${organising ? `<p class="ideas-note" aria-live="polite"><span class="typing" aria-hidden="true"><i></i><i></i><i></i></span> ${esc(head?.name ?? 'Dirección')} está organizando su ficha…</p>` : ''}
+    <section class="ideas" id="a-ideas" aria-live="polite" aria-label="Sugeridos para tu proyecto"></section>
+    <footer class="dialog-foot">
+      <button class="btn btn-ghost" type="button" data-manual ${organising ? 'disabled' : ''}>Rellenar a mano</button>
+      <button class="btn btn-primary" type="submit" ${organising ? 'disabled' : ''}>${icon.idea(15)}${organising ? 'Organizando…' : 'Organizar ficha'}</button>
+    </footer>`;
+
+  const formStep = () => `
+    ${drafted ? `<p class="draft-note">${icon.idea(14)}Ficha organizada a partir de lo que contaste: revísala y cambia lo que quieras.</p>` : ''}
+    <div class="field-row">
       <div class="field">
         <label for="a-name">Nombre</label>
-        <input id="a-name" name="name" required maxlength="40" value="${esc(w?.name ?? suggested?.name ?? '')}" placeholder="Ej. Lucía" autocomplete="off" />
+        <input id="a-name" data-v="name" required maxlength="40" value="${esc(v.name)}" placeholder="Ej. Lucía" autocomplete="off" />
         <p class="field-error" id="a-name-error" hidden>Ponle un nombre.</p>
       </div>
       <div class="field">
         <label for="a-role">Rol</label>
-        <select id="a-role" name="role" ${fixed ? 'disabled' : ''}>${roleOptions}</select>
-        <p class="section-note" id="a-role-about">${ROLES[role].about}${fixed ? ' Es un puesto fijo de la oficina.' : ''}</p>
+        <select id="a-role" data-v="role" ${fixed ? 'disabled' : ''}>${roles.map((r) => `<option value="${r}" ${r === v.role ? 'selected' : ''}>${ROLES[r].label}</option>`).join('')}</select>
       </div>
-      <div class="field">
-        <label for="a-title">Puesto</label>
-        <input id="a-title" name="title" maxlength="60" value="${esc(w?.title ?? suggested?.title ?? '')}" placeholder="${esc(ROLES[role].title)}" autocomplete="off" />
-      </div>
-      ${
-        w
-          ? ''
-          : `<div class="field">
-              <label for="a-boss">Responde a</label>
-              <select id="a-boss" name="boss">${bosses}</select>
-              <p class="section-note">Entrará por la puerta y se sentará en su puesto nuevo.</p>
-            </div>`
-      }
-      <footer class="dialog-foot">
-        <button class="btn btn-ghost" type="button" data-close>Cancelar</button>
-        <button class="btn btn-primary" type="submit">${w ? 'Guardar' : 'Añadir'}</button>
-      </footer>
-    </form>`;
+    </div>
+    <p class="section-note" id="a-role-about">${ROLES[v.role].about}${fixed ? ' Es un puesto fijo de la oficina.' : ''}</p>
+    <div class="field">
+      <label for="a-title">Puesto</label>
+      <input id="a-title" data-v="title" maxlength="60" value="${esc(v.title)}" placeholder="${esc(ROLES[v.role].title)}" autocomplete="off" />
+    </div>
+    ${
+      w
+        ? ''
+        : `<div class="field">
+            <label for="a-boss">Responde a</label>
+            <select id="a-boss" data-v="boss">${bossOptions()}</select>
+          </div>`
+    }
+    <div class="field">
+      <label for="a-summary">Qué hará</label>
+      <textarea id="a-summary" data-v="summary" rows="2" maxlength="${PROFILE_MAX.summary}" placeholder="Una o dos frases: qué hace aquí y para qué">${esc(v.summary)}</textarea>
+    </div>
+    <div class="field">
+      <label for="a-persona">Cómo es</label>
+      <textarea id="a-persona" data-v="persona" rows="4" maxlength="${PROFILE_MAX.persona}" placeholder="Trayectoria, carácter, cómo habla y qué no tolera">${esc(v.persona)}</textarea>
+    </div>
+    <div class="field">
+      <label for="a-focus">En qué se centra <span class="meta">una por línea</span></label>
+      <textarea id="a-focus" data-v="focus" rows="4" placeholder="Prácticas concretas con las que trabaja">${esc(v.focus)}</textarea>
+      <p class="section-note">${w ? 'Lo usa en todo lo que hace: en su mesa, en reuniones y en tu chat.' : 'Con «Qué hará» escrito entra directo a su mesa, sin entrevista. Sin él, lo entrevistan al llegar.'}</p>
+    </div>
+    <footer class="dialog-foot">
+      ${w ? '<button class="btn btn-ghost" type="button" data-close>Cancelar</button>' : `<button class="btn btn-ghost" type="button" data-back>${icon.chevron(14)}Volver</button>`}
+      <button class="btn btn-primary" type="submit">${w ? 'Guardar' : 'Añadir'}</button>
+    </footer>`;
 
-  const form = d.querySelector('form')!;
-  const name = form.querySelector<HTMLInputElement>('#a-name')!;
-  const error = form.querySelector<HTMLElement>('#a-name-error')!;
-  const roleSel = form.querySelector<HTMLSelectElement>('#a-role')!;
-  const title = form.querySelector<HTMLInputElement>('#a-title')!;
-  d.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => d.close()));
-  name.addEventListener('input', () => {
-    error.hidden = true;
-    name.removeAttribute('aria-invalid');
-  });
-  const showRole = () => {
-    const r = roleSel.value as RoleId;
-    form.querySelector('#a-role-about')!.textContent = ROLES[r].about;
-    title.placeholder = ROLES[r].title;
-  };
-  roleSel.addEventListener('change', showRole);
-
-  // Suggestions: picking one fills the form in; the list keeps up while the head thinks.
-  const ideasEl = form.querySelector<HTMLElement>('#a-ideas');
-  let list: Pick[] = [];
-  let chosen = suggested ? -1 : -2;
-  let fromMsg: string | null = null;
   let stop = () => {};
-  if (ideasEl) {
+  const render = () => {
+    stop();
+    stop = () => {};
+    d.innerHTML = `
+      <form method="dialog" class="dialog-form worker-form" novalidate>
+        <header class="dialog-head">
+          <h2>${w ? `Editar a ${esc(w.name)}` : 'Añadir agente'}</h2>
+          <button class="btn btn-icon" type="button" data-close aria-label="Cerrar">${icon.close(16)}</button>
+        </header>
+        ${step === 'describe' ? describeStep() : formStep()}
+      </form>`;
+    if (step === 'describe') watchIdeas();
+  };
+
+  // Suggestions: picking one writes it as the description, ready to organise.
+  let list: Pick[] = [];
+  const watchIdeas = () => {
+    const el = d.querySelector<HTMLElement>('#a-ideas');
+    if (!el) return;
     // Seen here: Dirección's message about them asks for nothing more.
     for (const m of getState().inbox) if (!m.closed && m.action?.type === 'ideas') closeMessage(m.id);
     let shown = '';
     const draw = () => {
       list = picks();
-      if (chosen === -1 && suggested) chosen = list.findIndex((p) => p.role === suggested.role && p.title === suggested.title);
+      const chosen = list.findIndex((p) => v.describe.startsWith(`${p.title}:`));
       const html = ideasHtml(list, chosen);
-      if (html !== shown) ideasEl.innerHTML = shown = html;
+      if (html !== shown) el.innerHTML = shown = html;
     };
     stop = subscribe(draw);
     const h = getState().hireIdeas;
     if (h.status === 'idle' || (h.status === 'ready' && h.basis !== hireBasis(getState())) || h.status === 'failed') askHireIdeas();
     draw();
-    ideasEl.addEventListener('click', (e) => {
-      const t = e.target as HTMLElement;
-      if (t.closest('[data-ideas-again]')) return askHireIdeas(true);
-      const b = t.closest<HTMLElement>('[data-idea]');
-      const p = b && list[Number(b.dataset.idea)];
-      if (!p) return;
-      chosen = Number(b.dataset.idea);
-      fromMsg = p.msg ?? null;
-      roleSel.value = p.role;
-      showRole();
-      title.value = p.title;
-      if (p.name && (!name.value.trim() || list.some((x) => x.name === name.value.trim()))) name.value = p.name;
-      error.hidden = true;
-      draw();
-      name.focus();
-    });
-  }
-  d.addEventListener('close', () => stop(), { once: true });
+  };
 
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const data = new FormData(form);
-    const value = String(data.get('name') ?? '').trim();
-    if (!value) {
-      error.hidden = false;
-      name.setAttribute('aria-invalid', 'true');
-      name.setAttribute('aria-describedby', 'a-name-error');
-      name.focus();
+  const organise = async () => {
+    const text = v.describe.trim();
+    if (text.length < 10) {
+      problem = 'Cuéntalo un poco más: qué hará y para qué.';
+      render();
+      d.querySelector<HTMLElement>('#a-describe')?.focus();
       return;
     }
-    const input: WorkerInput = {
-      name: value,
-      role: (w?.role ?? roleSel.value) as RoleId,
-      title: String(data.get('title') ?? '').trim(),
-      reportsTo: (data.get('boss') as string | null) || null,
-    };
-    if (w) updateWorker(w.id, input);
-    else {
+    organising = true;
+    problem = '';
+    render();
+    try {
+      const draft = await api<AgentDraft>('/api/agents/draft', 'POST', { text });
+      Object.assign(v, {
+        name: draft.name || v.name,
+        role: roles.includes(draft.role) ? draft.role : v.role,
+        title: draft.title,
+        boss: draft.reportsTo ?? v.boss,
+        summary: draft.profile.summary,
+        persona: draft.profile.persona,
+        focus: draft.profile.focus.join('\n'),
+      });
+      drafted = true;
+      step = 'form';
+    } catch (e) {
+      problem = e instanceof Error ? e.message : 'No se pudo organizar ahora.';
+    }
+    organising = false;
+    render();
+    d.querySelector<HTMLElement>(step === 'form' ? (v.name ? '#a-summary' : '#a-name') : '#a-describe')?.focus();
+  };
+
+  d.oninput = (e) => {
+    const t = e.target as HTMLInputElement;
+    const key = t.dataset.v as keyof typeof v | undefined;
+    if (!key) return;
+    (v as Record<string, string>)[key] = t.value;
+    if (key === 'name') {
+      d.querySelector('#a-name-error')?.setAttribute('hidden', '');
+      t.removeAttribute('aria-invalid');
+    }
+  };
+  d.onchange = (e) => {
+    const t = e.target as HTMLSelectElement;
+    if (t.dataset.v !== 'role') return;
+    v.role = t.value as RoleId;
+    d.querySelector('#a-role-about')!.textContent = ROLES[v.role].about;
+    d.querySelector<HTMLInputElement>('#a-title')!.placeholder = ROLES[v.role].title;
+  };
+  d.onclick = (e) => {
+    const t = e.target as HTMLElement;
+    if (t.closest('[data-close]')) return d.close();
+    if (t.closest('[data-manual]')) {
+      step = 'form';
+      drafted = false;
+      render();
+      return d.querySelector<HTMLElement>('#a-name')?.focus();
+    }
+    if (t.closest('[data-back]')) {
+      step = 'describe';
+      render();
+      return d.querySelector<HTMLElement>('#a-describe')?.focus();
+    }
+    if (t.closest('[data-ideas-again]')) return askHireIdeas(true);
+    const b = t.closest<HTMLElement>('[data-idea]');
+    const p = b && list[Number(b.dataset.idea)];
+    if (!p || organising) return;
+    fromMsg = p.msg ?? null;
+    v.describe = `${p.title}: ${p.why}`;
+    v.role = p.role;
+    if (p.name) v.name = p.name;
+    problem = '';
+    render();
+    d.querySelector<HTMLTextAreaElement>('#a-describe')?.focus();
+  };
+  d.onsubmit = (e) => {
+    e.preventDefault();
+    if (step === 'describe') return void organise();
+    const name = v.name.trim();
+    if (!name) {
+      const input = d.querySelector<HTMLInputElement>('#a-name')!;
+      d.querySelector('#a-name-error')?.removeAttribute('hidden');
+      input.setAttribute('aria-invalid', 'true');
+      input.setAttribute('aria-describedby', 'a-name-error');
+      input.focus();
+      return;
+    }
+    const summary = v.summary.trim();
+    const profile: AgentProfile | null = summary
+      ? { summary, persona: v.persona.trim(), focus: v.focus.split('\n').map((f) => f.trim().slice(0, PROFILE_MAX.focusItem)).filter(Boolean).slice(0, PROFILE_MAX.focus) }
+      : null;
+    const input: WorkerInput = { name, role: (w?.role ?? v.role) as RoleId, title: v.title.trim(), reportsTo: w ? null : v.boss || null, ...(profile ? { profile } : {}) };
+    if (w) {
+      updateWorker(w.id, input);
+      setProfile(w.id, profile);
+    } else {
       addWorker(input);
       onHired?.();
       if (fromMsg) closeMessage(fromMsg);
     }
     d.close();
-  });
+  };
+  // The dialog is shared with other forms: these handlers leave with this one.
+  d.addEventListener(
+    'close',
+    () => {
+      stop();
+      d.oninput = d.onchange = d.onclick = d.onsubmit = null;
+    },
+    { once: true },
+  );
 
+  render();
   d.showModal();
-  name.focus();
+  d.querySelector<HTMLElement>(step === 'describe' ? '#a-describe' : '#a-name')?.focus();
 }

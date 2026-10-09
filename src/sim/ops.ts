@@ -4,10 +4,11 @@
  *
  * Nothing here is simulated: things change because you (or, later, an agent) did them.
  */
-import { DEFAULT_LOOK, type Look } from './look';
-import { createSeed, DIRECTOR_SLOT, REQUIRED_NAMES, REQUIRED_ROLES, ROLE_ORDER, ROLES } from './seed';
+import { DEFAULT_LOOK, randomLook, type Look } from './look';
+import { createSeed, DIRECTOR_SLOT, MEETING_SEATS, REQUIRED_NAMES, REQUIRED_ROLES, ROLE_ORDER, ROLES } from './seed';
 import { DEFAULT_WORKER_AI, isProvider, type WorkerAi } from './settings';
-import type { Activity, CalendarEvent, ChatFile, FeedKind, Meeting, MessageAction, OwnerMessage, RoleId, SimState, Task, TaskStatus, Worker, WorkRequest } from './types';
+import { planTemplate, templateOf, type TemplateSlot } from './templates';
+import type { Activity, AgentProfile, CalendarEvent, ChatFile, FeedKind, Meeting, MessageAction, OwnerMessage, RoleId, SimState, Task, TaskStatus, TeamId, Worker, WorkRequest } from './types';
 
 const FEED_LIMIT = 250;
 /** Head → supervisor → agent. */
@@ -170,7 +171,26 @@ export interface WorkerInput {
   role: RoleId;
   title: string;
   reportsTo: string | null;
+  profile?: AgentProfile;
 }
+
+export const PROFILE_MAX = { summary: 400, persona: 1500, focus: 8, focusItem: 160 };
+
+export function isProfile(v: unknown): v is AgentProfile {
+  const o = v as AgentProfile;
+  return (
+    !!o && typeof o === 'object' &&
+    str(o.summary, PROFILE_MAX.summary) && o.summary.trim().length > 0 &&
+    str(o.persona, PROFILE_MAX.persona) &&
+    Array.isArray(o.focus) && o.focus.length <= PROFILE_MAX.focus && o.focus.every((f) => str(f, PROFILE_MAX.focusItem))
+  );
+}
+
+export const cleanProfile = (p: AgentProfile): AgentProfile => ({
+  summary: p.summary.trim(),
+  persona: p.persona.trim(),
+  focus: p.focus.map((f) => f.trim()).filter(Boolean),
+});
 
 /** The four roles every office has, one each. */
 export const isRequired = (w: Pick<Worker, 'role'>) => REQUIRED_ROLES.includes(w.role);
@@ -178,7 +198,14 @@ export const isRequired = (w: Pick<Worker, 'role'>) => REQUIRED_ROLES.includes(w
 /** Who works at a desk: everyone you hire, plus the head in their office. */
 export const deskOwners = (workers: Worker[]) => workers.filter((w) => !isRequired(w) || w.role === 'director');
 
-function hire(name: string, role: RoleId, title: string, reportsTo: string | null): Worker {
+/** The figure most of the office has (so newcomers don't look out of place). */
+function usualModel(): Look['model'] {
+  const count = new Map<Look['model'], number>();
+  for (const w of state.workers) count.set(w.look.model, (count.get(w.look.model) ?? 0) + 1);
+  return [...count].sort((a, b) => b[1] - a[1])[0]?.[0] ?? DEFAULT_LOOK.model;
+}
+
+export function hire(name: string, role: RoleId, title: string, reportsTo: string | null, profile?: AgentProfile): Worker {
   const used = new Set(state.workers.map((w) => w.desk));
   let desk = 0;
   while (used.has(desk)) desk++;
@@ -188,7 +215,8 @@ function hire(name: string, role: RoleId, title: string, reportsTo: string | nul
     title: title || ROLES[role].title,
     role,
     desk,
-    look: { ...DEFAULT_LOOK },
+    // The fixed roles keep the office's usual look; everyone else gets their own.
+    look: REQUIRED_ROLES.includes(role) ? { ...DEFAULT_LOOK } : { ...randomLook(), model: usualModel() },
     reportsTo,
     // The sceptic is outside the chain of command (and outside the office).
     staff: role === 'skeptic',
@@ -197,13 +225,15 @@ function hire(name: string, role: RoleId, title: string, reportsTo: string | nul
     taskId: null,
     pairWith: null,
     visitUntil: null,
-    // Everyone you hire is welcomed and interviewed; the four fixed roles open the office.
-    needsInterview: !REQUIRED_ROLES.includes(role),
+    // Everyone you hire is welcomed and interviewed, unless they come with their card written;
+    // the four fixed roles open the office.
+    needsInterview: !REQUIRED_ROLES.includes(role) && !profile,
     interviewSince: null,
     talk: null,
     brief: null,
     busyWith: null,
     ai: { ...DEFAULT_WORKER_AI, mcps: [] },
+    ...(profile ? { profile } : {}),
   };
   state.workers.push(w);
   return w;
@@ -278,7 +308,7 @@ export function hireBasis(st: SimState = state): string {
     .sort()
     .join('|');
   let h = 5381;
-  for (const ch of `${st.project}#${brief}#${team}`) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
+  for (const ch of `${st.project}#${brief}#${team}#${(st.brief.wanted ?? []).join('|')}`) h =((h * 33) ^ ch.charCodeAt(0)) >>> 0;
   return h.toString(36);
 }
 
@@ -297,7 +327,7 @@ export function addWorker(input: WorkerInput): string | null {
   const head = headOf(state.workers)!;
   let boss = worker(input.reportsTo) ?? head;
   if (boss.staff || depthOf(state.workers, boss.id) + 1 > MAX_DEPTH) boss = head;
-  const w = hire(input.name, input.role, input.title, boss.id);
+  const w = hire(input.name, input.role, input.title, boss.id, input.profile);
   log('team', `${w.name} se incorpora como ${w.title.toLowerCase()}`, w.id);
   // A suggestion taken up leaves the list.
   const same = (a: string) => a.trim().toLowerCase() === w.title.trim().toLowerCase();
@@ -317,6 +347,91 @@ export function updateWorker(id: string, patch: Omit<WorkerInput, 'reportsTo'>):
   w.role = patch.role;
   notify('change');
   return null;
+}
+
+/** A name for a newcomer: the first of the post's that's free (and never a fixed role's). */
+function freeName(names: string[]): string {
+  const taken = new Set([...state.workers.map((w) => w.name.toLowerCase()), ...Object.values(REQUIRED_NAMES).map((n) => n.toLowerCase())]);
+  const free = names.find((n) => !taken.has(n.toLowerCase()));
+  if (free) return free;
+  let i = 2;
+  while (taken.has(`${names[0]} ${i}`.toLowerCase())) i++;
+  return `${names[0]} ${i}`;
+}
+
+/**
+ * Sets up a ready-made team (see templates.ts): the plan is worked out again here, and of the
+ * people it would adopt only those in `keep` are moved; every other post is a new hire with its
+ * card. `profiles`: adopted people without a card get the post's.
+ */
+export function applyTemplate(id: TeamId, choice: { keep: string[]; profiles: boolean }): { created: string[]; joined: string[]; lead: string } | string {
+  const head = headOf(state.workers);
+  if (!head) return 'La oficina no tiene dirección';
+  const t = templateOf(id);
+  const plan = planTemplate(state.workers, id);
+  const keep = new Set(choice.keep);
+  const created: string[] = [];
+  const joined: string[] = [];
+  const card = (w: Worker, slot: TemplateSlot) => {
+    if (choice.profiles && !w.profile) setProfileOf(w, slot.profile);
+  };
+  // The lead first, answering to the head.
+  let lead = plan.lead.adopt && keep.has(plan.lead.adopt) ? worker(plan.lead.adopt)! : null;
+  if (lead) {
+    if (lead.reportsTo !== head.id && !bossProblem(state.workers, lead.id, head.id)) lead.reportsTo = head.id;
+    card(lead, t.lead);
+    joined.push(lead.id);
+  } else {
+    lead = hire(freeName(t.lead.names), t.lead.role, t.lead.title, head.id, t.lead.profile);
+    created.push(lead.id);
+  }
+  lead.team = id;
+  // Then each post: the person it adopts, or someone new.
+  for (const seat of plan.members) {
+    const w = seat.adopt && keep.has(seat.adopt) ? worker(seat.adopt) : null;
+    if (w && !bossProblem(state.workers, w.id, lead.id)) {
+      w.reportsTo = lead.id;
+      w.staff = false;
+      w.team = id;
+      card(w, seat.slot);
+      joined.push(w.id);
+      continue;
+    }
+    const n = hire(freeName(seat.slot.names), seat.slot.role, seat.slot.title, lead.id, seat.slot.profile);
+    n.team = id;
+    created.push(n.id);
+  }
+  // People of the team's roles who were loose under the head join too, if you said so.
+  for (const wid of plan.extras) {
+    const w = worker(wid);
+    if (!w || !keep.has(wid) || bossProblem(state.workers, w.id, lead.id)) continue;
+    w.reportsTo = lead.id;
+    w.team = id;
+    joined.push(w.id);
+  }
+  const names = (ids: string[]) => ids.map((x) => worker(x)!.name).join(', ');
+  log(
+    'team',
+    `Se monta ${t.label}: ${lead.name} lo dirige${created.length ? `; llegan ${names(created.filter((x) => x !== lead!.id))}` : ''}${joined.filter((x) => x !== lead!.id).length ? `; se suman ${names(joined.filter((x) => x !== lead!.id))}` : ''}`,
+    lead.id,
+  );
+  notify('change');
+  return { created, joined, lead: lead.id };
+}
+
+/** A card given without the rest of setProfile's bookkeeping being lost. */
+function setProfileOf(w: Worker, profile: AgentProfile): void {
+  w.profile = { ...profile, focus: [...profile.focus] };
+  if (w.needsInterview && w.interviewSince === null) w.needsInterview = false;
+}
+
+/** Their card: written, rewritten or taken away. With one, there's no interview left to do. */
+export function setProfile(id: string, profile: AgentProfile | null): void {
+  const w = worker(id);
+  if (!w) return;
+  if (profile) setProfileOf(w, profile);
+  else delete w.profile;
+  notify('change');
 }
 
 /** Moves someone under another boss. The three fixed roles stay where they are. */
@@ -605,11 +720,17 @@ export function requestWork(text: string, via: string | null = null): void {
 }
 
 /** Your answer to something an agent needed; it reaches them through their notes (server side). */
-export function answerQuestion(id: string, text: string): void {
+export function answerQuestion(id: string, text: string, inChat = false): void {
   const q = state.questions.find((x) => x.id === id);
   if (!q || q.answer !== null) return;
   q.answer = text;
   q.answeredAt = state.clock;
+  // Answered from «Para ti»: it shows in the chat where they asked, too.
+  const asker = worker(q.byId ?? q.workerId);
+  if (!inChat && asker?.chat?.lines.some((l) => l.question === id)) {
+    asker.chat.lines.push({ at: state.clock, speaker: 'owner', text, tools: [] });
+    asker.chat.unread = 0;
+  }
   // The message that asked it has been dealt with.
   for (const m of state.inbox) if (m.action?.type === 'answer' && m.action.questionId === id) Object.assign(m, { closed: true, read: true });
   log('question', `Respondes a ${worker(q.workerId)?.name ?? 'alguien'}: «${text.length > 80 ? `${text.slice(0, 80)}…` : text}»`, q.workerId);
@@ -631,7 +752,12 @@ export function callMeeting(kind: Meeting['kind'] = 'review'): string | null {
   const people = first
     ? [head, ...state.workers.filter((w) => w.role === 'interviewer')]
     : [head, ...reportsOf(state.workers, head.id).filter((w) => !w.staff)];
-  const here = people.filter((w) => w.enabled);
+  // As many as there are chairs: the organizer, then whoever leads a team, then the rest.
+  const rank = (w: Worker) => (w === head ? 0 : w.role === 'organizer' ? 1 : reportsOf(state.workers, w.id).length ? 2 : w.role === 'interviewer' ? 3 : 4);
+  const here = people
+    .filter((w) => w.enabled)
+    .sort((a, b) => rank(a) - rank(b))
+    .slice(0, MEETING_SEATS);
   if (!here.length) return 'No hay nadie de la dirección en la oficina';
   state.meeting = {
     id: `m${state.nextId++}`,
@@ -665,6 +791,10 @@ const CHAT_KEEP = 40;
 /** Files you attach are looked up where they're kept (the server says how). */
 let findFile: (id: string) => ChatFile | null = () => null;
 export const setFileFinder = (fn: (id: string) => ChatFile | null) => (findFile = fn);
+/** A very long message is kept as a document (the server says how), so the chat stays light. */
+let keepLong: (text: string) => ChatFile | null = () => null;
+export const setLongKeeper = (fn: (text: string) => ChatFile | null) => (keepLong = fn);
+const LONG = 12_000;
 
 /** You write to someone directly; they answer in the same chat (server side, with their AI). */
 export function ownerChat(workerId: string, text: string, fileIds: string[] = []): void {
@@ -672,14 +802,44 @@ export function ownerChat(workerId: string, text: string, fileIds: string[] = []
   if (!w) return;
   const files = fileIds.map(findFile).filter((f): f is ChatFile => !!f);
   if (!text && !files.length) return;
+  if (text.length > LONG) {
+    const doc = keepLong(text);
+    if (doc) {
+      files.unshift(doc);
+      text = `${text.slice(0, 1200).trimEnd()}… (el texto completo va en ${doc.name})`;
+    }
+  }
   const chat = (w.chat ??= { lines: [], pending: false, thinking: null });
   chat.lines.push({ at: state.clock, speaker: 'owner', text, tools: [], ...(files.length ? { files } : {}) });
+  chat.unread = 0;
+  // What they asked you in this chat: your reply here is the answer (their paused work resumes).
+  const asked = state.questions.filter((q) => q.answer === null && (q.byId ?? q.workerId) === w.id).at(-1);
+  if (asked && text) answerQuestion(asked.id, text, true);
   if (chat.lines.length > CHAT_KEEP) chat.lines.splice(0, chat.lines.length - CHAT_KEEP);
   chat.pending = true;
   notify('change');
 }
 
+/** You step into a conversation between two of them: your words go in, and they answer you. */
+export function ownerTalk(convId: string, text: string): string | null {
+  const c = state.conversations.find((x) => x.id === convId);
+  if (!c) return 'Esa conversación ya no está';
+  if (c.endedAt !== null) return 'Esa conversación ya ha terminado: escríbele en su chat privado';
+  c.lines.push({ at: state.clock, speaker: 'owner', text, tools: [] });
+  c.joined = (c.joined ?? 0) + 1;
+  notify('change');
+  return null;
+}
+
 const ARCHIVE_KEEP = 20;
+
+/** You've seen their messages. */
+export function readChat(workerId: string): void {
+  const chat = worker(workerId)?.chat;
+  if (!chat?.unread) return;
+  chat.unread = 0;
+  notify('change');
+}
 
 /** A fresh chat with them: the current one is kept in their file (Ajustes) and they start anew. */
 export function resetChat(workerId: string): void {
@@ -889,7 +1049,10 @@ const isTaskInput = (v: unknown): v is TaskInput => {
 };
 const isWorkerInput = (v: unknown): v is WorkerInput => {
   const o = v as WorkerInput;
-  return !!o && str(o.name, 40) && o.name.trim().length > 0 && ROLE_IDS.has(o.role) && str(o.title, 60) && idOrNull(o.reportsTo);
+  return (
+    !!o && str(o.name, 40) && o.name.trim().length > 0 && ROLE_IDS.has(o.role) && str(o.title, 60) && idOrNull(o.reportsTo) &&
+    (o.profile === undefined || isProfile(o.profile))
+  );
 };
 const hasStatus = <T extends object>(v: T): v is T & { status: TaskStatus } => STATUSES.has((v as { status?: TaskStatus }).status!);
 const isLookPatch = (v: unknown): v is Partial<Look> =>
@@ -904,7 +1067,14 @@ const isAiPatch = (v: unknown): v is Partial<WorkerAi> => {
   if ('mcps' in o && !(Array.isArray(o.mcps) && o.mcps.length <= 40 && o.mcps.every((m) => str(m, 24) && /^[a-z0-9_]+$/.test(m)))) return false;
   return true;
 };
-const clean = (w: WorkerInput): WorkerInput => ({ ...w, name: w.name.trim(), title: w.title.trim() });
+/** Only what the browser may set, tidied. */
+const clean = (w: WorkerInput): WorkerInput => ({
+  name: w.name.trim(),
+  role: w.role,
+  title: w.title.trim(),
+  reportsTo: w.reportsTo,
+  ...(w.profile ? { profile: cleanProfile(w.profile) } : {}),
+});
 
 /**
  * Everything the browser may ask the server to do, by name. Each entry checks its own
@@ -915,6 +1085,7 @@ export const COMMANDS = {
   setOfficeInfo: (agency: unknown, project: unknown) => str(agency, 60) && str(project, 80) && setOfficeInfo(agency.trim(), project.trim()),
   addWorker: (input: unknown) => (isWorkerInput(input) ? addWorker(clean(input)) : null),
   updateWorker: (id: unknown, input: unknown) => (str(id, 64) && isWorkerInput(input) ? updateWorker(id, clean(input)) : null),
+  setProfile: (id: unknown, profile: unknown) => str(id, 64) && (profile === null || isProfile(profile)) && void setProfile(id, profile === null ? null : cleanProfile(profile)),
   setBoss: (id: unknown, bossId: unknown) => (str(id, 64) && str(bossId, 64) ? setBoss(id, bossId) : null),
   removeWorker: (id: unknown) => (str(id, 64) ? removeWorker(id) : null),
   callSkeptic: () => callSkeptic(),
@@ -934,11 +1105,13 @@ export const COMMANDS = {
   ownerChat: (id: unknown, text: unknown, files: unknown) =>
     str(id, 64) &&
     typeof text === 'string' &&
-    text.length <= 4000 &&
+    text.length <= 2_000_000 &&
     (files === undefined || (Array.isArray(files) && files.length <= 10 && files.every((f) => str(f, 40)))) &&
     void ownerChat(id, text.trim(), (files as string[] | undefined) ?? []),
   endMeeting: () => endMeeting(),
+  ownerTalk: (id: unknown, text: unknown) => str(id, 64) && typeof text === 'string' && text.trim().length >= 1 && text.length <= 4000 ? ownerTalk(id, text.trim()) : null,
   resetChat: (id: unknown) => str(id, 64) && void resetChat(id),
+  readChat: (id: unknown) => str(id, 64) && void readChat(id),
   deleteChatArchive: (id: unknown, at: unknown) => str(id, 64) && typeof at === 'number' && Number.isFinite(at) && void deleteChatArchive(id, at),
   answerQuestion: (id: unknown, text: unknown) => str(id, 24) && typeof text === 'string' && text.trim().length >= 1 && text.length <= 4000 && void answerQuestion(id, text.trim()),
   createTask: (input: unknown) => isTaskInput(input) && void createTask({ ...input, title: input.title.trim() }),

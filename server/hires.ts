@@ -22,6 +22,29 @@ const andList = (xs: string[]) => (xs.length < 2 ? (xs[0] ?? '') : `${xs.slice(0
 
 const cut = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().replace(/\s+/g, ' ').slice(0, max) : '');
 
+const plainText = (t: string) => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9/]+/g, ' ').trim();
+/** Words in a job title that say which role it is, when the model names the role its own way. */
+const ROLE_HINTS: [RegExp, RoleId][] = [
+  [/\barte\b|\bart\b/, 'art'],
+  [/\bui\b|\bux\b|interfaz|experiencia de usuario/, 'uiux'],
+  [/marketing|redes|community|social|guion|campan|copy|contenido|seo/, 'marketing'],
+  [/tendencia|investiga|analis|datos|mercado/, 'research'],
+  [/desarroll|program|frontend|backend|codigo/, 'dev'],
+  [/disen|ilustra|mockup|imagen|generador|grafic/, 'design'],
+];
+
+/** «art», «Dirección de arte» or just a title like «Director de arte»: the role it means, or null. */
+function roleFor(raw: unknown, title: string): RoleId | null {
+  const v = plainText(typeof raw === 'string' ? raw : '');
+  const exact = HIRE_ROLES.find((r) => r === v || plainText(ROLES[r].label) === v);
+  if (exact) return exact;
+  for (const text of [v, plainText(title)]) {
+    const hit = ROLE_HINTS.find(([re, r]) => HIRE_ROLES.includes(r) && re.test(text));
+    if (hit) return hit[1];
+  }
+  return null;
+}
+
 /** Without an AI: one per role nobody in the team has yet. */
 function basicIdeas(): HireIdea[] {
   const have = new Set(getState().workers.map((w) => w.role));
@@ -94,6 +117,9 @@ export function hiresTick(publish: () => void): void {
 
 async function suggest(headName: string, brain: Exclude<ReturnType<typeof brainOf>, string>): Promise<HireIdea[]> {
   const st = getState();
+  const wanted = st.brief.wanted ?? [];
+  // What you asked for comes first: room for all of it, up to a sensible handful.
+  const max = Math.max(MAX_IDEAS, Math.min(8, wanted.length));
   const team = st.workers.map((w) => `${w.name}: ${w.title} (${ROLES[w.role].label})`).join('; ');
   const open = st.tasks
     .filter((t) => t.status !== 'done')
@@ -109,14 +135,15 @@ async function suggest(headName: string, brain: Exclude<ReturnType<typeof brainO
       `Equipo: ${team}`,
       open ? `Trabajo abierto:\n${open}` : 'Sin tareas abiertas.',
       `Roles que se pueden contratar: ${HIRE_ROLES.map((r) => `${r} (${ROLES[r].label}: ${ROLES[r].about})`).join('; ')}.`,
+      wanted.length ? `Puestos que el propietario ha pedido para el equipo (van primero, uno por idea, con su mismo nombre y el rol más cercano; salvo los que ya cubra alguien):\n${wanted.map((p) => `- ${p}`).join('\n')}` : '',
       '',
-      `¿Qué 2-${MAX_IDEAS} agentes nuevos aportarían más ahora a ESTE producto? Puesto concreto y especializado (p. ej. «SEO y contenidos», no «Marketing»); un rol puede repetirse con otra especialidad. Nada que ya cubra alguien del equipo. Si el dossier está casi vacío, lo básico para arrancar. Por orden de importancia.`,
+      `¿Qué 2-${max} agentes nuevos aportarían más ahora a ESTE producto? Puesto concreto y especializado (p. ej. «SEO y contenidos», no «Marketing»); un rol puede repetirse con otra especialidad. Nada que ya cubra alguien del equipo. Si el dossier está casi vacío, lo básico para arrancar. Por orden de importancia.`,
       `motivo: una frase clara para el propietario, ligada a su producto${terse() ? ', máx. 20 palabras' : ', máx. 28 palabras'}. nombre: nombre de pila español que no esté en el equipo.`,
       'Responde SOLO JSON: {"ideas": [{"rol": "design", "puesto": "…", "nombre": "…", "motivo": "…"}]}',
     ].join('\n'),
     [],
     async () => '',
-    { maxRounds: 0, maxTokens: 700 },
+    { maxRounds: 0, maxTokens: 600 + max * 150 },
   );
   spend(out.tokens);
   const json = parseJson(out.text);
@@ -124,14 +151,14 @@ async function suggest(headName: string, brain: Exclude<ReturnType<typeof brainO
   const names = new Set(st.workers.map((w) => w.name.toLowerCase()));
   const ideas: HireIdea[] = [];
   for (const x of list) {
-    const role = x?.rol as RoleId;
     const title = cut(x?.puesto, 60);
     const why = cut(x?.motivo, 280);
-    if (!HIRE_ROLES.includes(role) || !title || !why) continue;
+    const role = roleFor(x?.rol, title);
+    if (!role || !title || !why) continue;
     if (ideas.some((i) => i.title.toLowerCase() === title.toLowerCase())) continue;
     const name = cut(x?.nombre, 40);
     ideas.push({ role, title, why, name: names.has(name.toLowerCase()) ? '' : name });
-    if (ideas.length === MAX_IDEAS) break;
+    if (ideas.length === max) break;
   }
   if (!ideas.length && list.length) throw new LlmError('La respuesta no traía sugerencias válidas. Prueba otra vez.', 0);
   return ideas;

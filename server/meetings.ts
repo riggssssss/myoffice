@@ -93,44 +93,30 @@ async function listen(m: Meeting, publish: () => void): Promise<{ order: Worker[
       `Dossier actual:\n${known || '(vacío)'}`,
       rulingsText(),
       '',
-      `Del ÚLTIMO mensaje del propietario («${turn.slice(0, 600)}»):`,
-      `1. "dossier": lo que dice del producto. Aspectos: ${BRIEF_ASPECTS.map((a) => `${a.id} (${a.label.toLowerCase()})`).join(', ')}. Solo los aspectos de los que habla (normalmente 0-2), aunque no responda a lo preguntado. Lo que dijo el equipo solo cuenta si él lo acepta en ese mensaje. Por aspecto: texto completo actualizado (lo que ya había + lo nuevo), ${terse() ? 'telegráfico, ' : ''}datos exactos; certeza 0-1 (0.9 claro y completo, 0.5 a medias). Nada inventado, nada de preguntas.`,
+      `Del ÚLTIMO mensaje del propietario («${turn.slice(0, 2400)}»):`,
+      `1. "dossier": lo que dice del producto. Aspectos: ${BRIEF_ASPECTS.map((a) => `${a.id} (${a.label.toLowerCase()})`).join(', ')}. Todos los aspectos de los que habla (un mensaje largo suele tocar varios; uno corto, 0-2), aunque no responda a lo preguntado. Lo que dijo el equipo solo cuenta si él lo acepta en ese mensaje. Por aspecto: texto completo actualizado (lo que ya había + lo nuevo), ${terse() ? 'telegráfico, ' : ''}datos exactos; certeza 0-1 (0.9 claro y completo, 0.5 a medias). Nada inventado, nada de preguntas.`,
       '2. "decisiones": instrucciones firmes sobre cómo trabajar que da en ESE mensaje (quién hace qué, ritmo, qué no tocar, qué no volver a preguntar), en frases cortas impersonales, p. ej. «Sin fechas fijas: ritmo diario», «El equipo se centra en marketing y creación de mockups», «Uno crea los mockups y otro los revisa con las referencias visuales del propietario». Solo nuevas (no repitas las que ya están). [] si no hay.',
-      '3. "suyo": temas que dice que lleva él mismo, 1-3 palabras cada uno (p. ej. "indexación", "validación de pagos"). [] si no hay.',
+      '3. "suyo": temas que dice expresamente que hace él mismo, 1-3 palabras en español sacadas de su mensaje (p. ej. "indexación", "validación de pagos"). Decidir el ritmo o avisar de algo NO es «suyo». [] si no hay.',
+      '3b. "puestos": perfiles que dice que quiere en el equipo, con lo que harán (p. ej. "Director de arte: supervisa los mockups generados y los compara con las referencias"). [] si no habla del equipo.',
       '4. "encargos": lo que manda hacer a alguien del equipo en ESE mensaje, como tarea concreta con sus datos (p. ej. {"quien": "Óscar", "tarea": "Buscar la forma más barata de generar 10-30 mockups al día con 20 €/mes"}). "quien" vacío si no nombra a nadie. [] si no manda nada.',
       '5. "cerrado": temas que ya ha respondido o zanjado en la reunión y no se le vuelven a preguntar, 1-2 palabras cada uno, con los sinónimos que usaría el equipo (p. ej. "fechas", "plazo", "presupuesto", "precio por mockup", "frecuencia"). [] si no hay.',
       choose ? '6. "habla": quién le responde: a quien le toca por su puesto o quien más aporta.' : '',
-      `Responde SOLO JSON: {"dossier": {"para_quien": {"texto": "…", "certeza": 0.8}}, "decisiones": [], "suyo": [], "encargos": [], "cerrado": []${choose ? ', "habla": "Nombre"' : ''}}`,
+      `Responde SOLO JSON: {"dossier": {"para_quien": {"texto": "…", "certeza": 0.8}}, "decisiones": [], "suyo": [], "encargos": [], "cerrado": [], "puestos": []${choose ? ', "habla": "Nombre"' : ''}}`,
     ]
       .filter(Boolean)
       .join('\n'),
     [],
     async () => '',
-    { maxRounds: 0, maxTokens: 1000 },
+    // A long message makes a long answer (and a reasoning model thinks first): room for both.
+    { maxRounds: 0, maxTokens: turn.length > 400 ? 2400 : 1400 },
   );
   spend(out.tokens);
   m.thinking = null;
   const json = parseJson(out.text);
+  // Lost silently, a whole message of facts never reaches the dossier: at least say so.
+  if (!json) console.error(`[reunión] lo que dijiste no se pudo apuntar (respuesta sin JSON): ${redact(out.text.slice(0, 300))}`);
   // Into the dossier right away: the bars move while you talk.
-  const noted: string[] = [];
-  const dossier = (json?.dossier ?? {}) as Record<string, { texto?: unknown; certeza?: unknown }>;
-  // «No sé» adds nothing to the dossier; one message rarely touches more than a few aspects.
-  const entries = tone === 'unsure' ? [] : Object.entries(dossier).slice(0, 3);
-  const said = new Set(roots(turn));
-  for (const [id, v] of entries) {
-    const before = getState().brief.aspects[id as BriefAspect]?.text;
-    if (typeof v?.texto === 'string' && v.texto.trim() === before) continue;
-    // What's new in it has to come from what he just said: no filling gaps with guesses.
-    const had = new Set(roots(before ?? ''));
-    const added = roots(typeof v?.texto === 'string' ? v.texto : '').filter((r) => !had.has(r));
-    if (added.length && added.filter((r) => said.has(r)).length / added.length < 0.5) continue;
-    if (noteBrief({ aspecto: id, texto: v?.texto, certeza: v?.certeza }).result === 'Apuntado.') noted.push(BRIEF_ASPECTS.find((a) => a.id === id)!.label.toLowerCase());
-  }
-  if (noted.length) notes.push({ name: 'anotar_dossier', note: noted.length > 2 ? `apuntó ${noted.length} aspectos en el dossier` : `apuntó en el dossier: ${noted.join(' y ')}` });
-  const ruled = noteRulings(json?.decisiones);
-  const kept = keepForOwner(json?.suyo, lead);
-  if (ruled) notes.push({ name: 'decision', note: ruled === 1 ? 'apuntó tu decisión' : `apuntó ${ruled} decisiones tuyas` });
-  if (kept.length) notes.push({ name: 'suyo', note: `quitó del equipo lo que llevas tú: ${kept.join(', ')}` });
+  notes.push(...applyOwnerNotes(json, turn, m.lines.filter((l) => l.speaker === 'owner').map((l) => l.text).join(' '), lead, tone === 'unsure'));
   closeTopics(m, json?.cerrado);
   // What you told someone to do: a real task, and they're the one who answers.
   const orders = takeOrders(m, json?.encargos, named ?? lead);
@@ -143,6 +129,101 @@ async function listen(m: Meeting, publish: () => void): Promise<{ order: Worker[
   const lastVoice = [...m.lines].reverse().find((l) => l.speaker !== 'owner')?.speaker;
   if (pick !== lead && pick.id !== lastVoice) notes.unshift({ name: 'turno', note: `responde tras hablarlo con ${andList(all.filter((w) => w !== pick).map((w) => w.name))}` });
   return { order: orderFor(pick), notes, web, task: null };
+}
+
+/**
+ * Roles you want in the team, kept with the dossier: the head's next hire ideas start from them
+ * (she's asked to think again right away). Returns how many were new.
+ */
+function noteWanted(raw: unknown): number {
+  const st = getState();
+  const list = (st.brief.wanted ??= []);
+  let added = 0;
+  for (const p of Array.isArray(raw) ? raw.slice(0, 8) : []) {
+    const text = typeof p === 'string' ? p.trim().replace(/\s+/g, ' ').slice(0, 200) : '';
+    if (text.length < 6 || list.some((x) => overlap(x, text) > 0.6)) continue;
+    list.push(text);
+    added++;
+  }
+  if (list.length > 12) list.splice(0, list.length - 12);
+  if (added && st.hireIdeas.status !== 'thinking') st.hireIdeas.status = 'asked';
+  if (added) notify('change');
+  return added;
+}
+
+/**
+ * What the owner made clear, kept: the dossier (only what comes from his words), his rulings,
+ * what he keeps for himself and the roles he wants. Shared by meetings and chats; returns the
+ * notes to show next to whoever took them down.
+ */
+function applyOwnerNotes(json: Record<string, unknown> | null, turn: string, ownerWords: string, by: Worker, unsure = false): ToolUse[] {
+  const notes: ToolUse[] = [];
+  const noted: string[] = [];
+  const dossier = (json?.dossier ?? {}) as Record<string, { texto?: unknown; certeza?: unknown }>;
+  // «No sé» adds nothing to the dossier; one message rarely touches more than a few aspects.
+  const entries = unsure ? [] : Object.entries(dossier).slice(0, turn.length > 400 ? BRIEF_ASPECTS.length : 3);
+  // His words, this message first: a summary reuses them, a guess doesn't.
+  const said = new Set(roots(`${turn} ${ownerWords}`));
+  for (const [id, v] of entries) {
+    const before = getState().brief.aspects[id as BriefAspect]?.text;
+    if (typeof v?.texto === 'string' && v.texto.trim() === before) continue;
+    // What's new in it has to come from what he said: no filling gaps with guesses. A third of
+    // the new words is enough, since a summary rephrases («plataforma» for «web»).
+    const had = new Set(roots(before ?? ''));
+    const added = roots(typeof v?.texto === 'string' ? v.texto : '').filter((r) => !had.has(r));
+    if (added.length && added.filter((r) => said.has(r)).length / added.length < 0.34) continue;
+    if (noteBrief({ aspecto: id, texto: v?.texto, certeza: v?.certeza }).result === 'Apuntado.') noted.push(BRIEF_ASPECTS.find((a) => a.id === id)!.label.toLowerCase());
+  }
+  if (noted.length) notes.push({ name: 'anotar_dossier', note: noted.length > 2 ? `apuntó ${noted.length} aspectos en el dossier` : `apuntó en el dossier: ${noted.join(' y ')}` });
+  const ruled = noteRulings(json?.decisiones);
+  const kept = keepForOwner(json?.suyo, by, turn);
+  const wanted = noteWanted(json?.puestos);
+  if (wanted) notes.push({ name: 'puestos', note: `apuntó ${wanted === 1 ? 'el puesto que quieres' : `${wanted} puestos que quieres`} en el equipo` });
+  if (ruled) notes.push({ name: 'decision', note: ruled === 1 ? 'apuntó tu decisión' : `apuntó ${ruled} decisiones tuyas` });
+  if (kept.length) notes.push({ name: 'suyo', note: `quitó del equipo lo que llevas tú: ${kept.join(', ')}` });
+  return notes;
+}
+
+/** Worth taking notes on: more than a greeting or a nod. */
+const SUBSTANCE = (text: string) => norm(text).split(' ').filter((w) => w.length > 2).length >= 5;
+
+/**
+ * Your chat with someone: what you make clear there about the project counts as much as in a
+ * meeting (a correction, a decision, a role you want). They take it down before answering, and
+ * the notes say what they took down so «¿lo has apuntado?» has a true answer.
+ */
+export async function noteFromChat(w: Worker, turn: string, history: { owner: boolean; text: string }[]): Promise<ToolUse[]> {
+  const brain = brainOf(w);
+  if (typeof brain === 'string' || !SUBSTANCE(turn)) return [];
+  const out = await think(
+    brain,
+    `Chat entre el propietario y ${w.name} (${w.title}). Tomas nota de lo que el propietario deja claro sobre su proyecto.`,
+    [
+      'Lo último:',
+      history
+        .slice(-6)
+        .map((l) => `${l.owner ? 'Propietario' : w.name}: ${l.text.slice(0, 1200)}`)
+        .join('\n'),
+      '',
+      `Dossier actual:\n${briefText() || '(vacío)'}`,
+      rulingsText(),
+      '',
+      `Del ÚLTIMO mensaje del propietario («${turn.slice(0, 2400)}»):`,
+      `1. "dossier": lo que dice del producto. Aspectos: ${BRIEF_ASPECTS.map((a) => `${a.id} (${a.label.toLowerCase()})`).join(', ')}. Solo los aspectos de los que habla. Lo que dijo ${w.name} solo cuenta si el propietario lo acepta. Por aspecto: texto completo actualizado (lo que ya había + lo nuevo, y si corrige algo, su versión), ${terse() ? 'telegráfico, ' : ''}datos exactos; certeza 0-1. Nada inventado.`,
+      `2. "decisiones": instrucciones o correcciones firmes sobre cómo se hace el trabajo en el proyecto, en frases cortas impersonales (p. ej. «El croma se pide en el mismo prompt de generación, no se añade después»). Lo que le manda hacer ahora a ${w.name} («habla con Marta», «mira esto») NO es una decisión. Solo nuevas. [] si no hay.`,
+      '3. "suyo": temas que dice expresamente que hace él mismo, 1-3 palabras en español sacadas de su mensaje. [] si no hay.',
+      '4. "puestos": perfiles que dice que quiere en el equipo, con lo que harán. [] si no habla del equipo.',
+      'Responde SOLO JSON: {"dossier": {}, "decisiones": [], "suyo": [], "puestos": []}',
+    ].join('\n'),
+    [],
+    async () => '',
+    { maxRounds: 0, maxTokens: turn.length > 400 ? 2400 : 1200 },
+  );
+  spend(out.tokens);
+  const json = parseJson(out.text);
+  if (!json) console.error(`[chat] ${w.name}: lo que dijiste no se pudo apuntar (respuesta sin JSON): ${redact(out.text.slice(0, 300))}`);
+  const owner = history.filter((l) => l.owner).map((l) => l.text).join(' ');
+  return applyOwnerNotes(json, turn, owner, w, UNSURE.test(turn));
 }
 
 /** Everything you've said since the team last spoke, as one turn. */
@@ -227,13 +308,14 @@ function noteRulings(raw: unknown): number {
  * What you said you handle yourself: off the team's plate. Their unfinished tasks on it go (each
  * one in the log, so you can see what was dropped), and their open questions about it too.
  */
-function keepForOwner(raw: unknown, by: Worker): string[] {
+function keepForOwner(raw: unknown, by: Worker, turn: string): string[] {
   const st = getState();
   const yours = (st.brief.yours ??= []);
   const kept: string[] = [];
   for (const t of Array.isArray(raw) ? raw.slice(0, 4) : []) {
     const topic = typeof t === 'string' ? t.trim().slice(0, 40) : '';
-    if (norm(topic).length < 4) continue;
+    // In his own words or not at all: «pacing» for «I'll say when we slow down» would drop real work.
+    if (norm(topic).length < 4 || !aboutTopic(turn, topic)) continue;
     const isNew = !yours.some((y) => aboutTopic(y, topic) && aboutTopic(topic, y));
     if (isNew) yours.push(topic);
     // «Priorizar la indexación» isn't the team's priority any more: back to doubtful.
@@ -291,7 +373,7 @@ const GUIDE = [
 
 /** «Yo no he dicho eso», «escúchame», «te he dicho que…», a swear word: the team isn't listening. */
 const COMPLAINT =
-  /(no te he dicho|no (os )?he dicho|(?<![\p{L}])(te|os) (lo )?he dicho|ya (te|os) (lo )?(he )?dicho|esc[uú]ch(ame|adme)|no me (est[aá]is |est[aá]s )?escuch|no es eso|inventad|inventando|qu[eé] dices|de qu[eé] habl[aá]is|fatal|no tiene sentido|no me hac[eé]is caso|olv[ií]da(te|os|d)(?![\p{L}])|joder|co[ñn]o(?![\p{L}])|hostia|me cago)/iu;
+  /(no te he dicho|no (os )?he dicho|(?<![\p{L}])(te|os) (lo )?he dicho|ya (te|os) (lo )?(he )?dicho|esc[uú]ch(ame|adme)|no me (est[aá]is |est[aá]s )?escuch|no es eso|inventad|inventando|qu[eé] dices|de qu[eé] habl[aá]is|fatal|no tiene sentido|no me hac[eé]is caso|olv[ií]da(te|os|d)(?![\p{L}])|^\s*no,?\s*no(?![\p{L}])|confusi[oó]n|te equivocas|est[aá]s equivocad|te has liado|no es as[ií]|a qu[eé] esperas|(por qu[eé] )?no haces nada|sigues sin|joder|co[ñn]o(?![\p{L}])|hostia|me cago)/iu;
 /** Shouting: mostly capitals, or «!!». */
 const shouting = (text: string) => {
   const letters = text.replace(/[^\p{L}]/gu, '');
@@ -312,10 +394,15 @@ const HANDOFF =
 /** «Te paso un prompt», «aquí tienes la web»: something should come with the message. */
 const PASSES = /((te|os) (paso|dejo|adjunto|mando|env[ií]o)|aqu[ií] tienes)/iu;
 
-type Tone = 'complaint' | 'handoff' | 'confused' | 'unsure' | 'agrees' | 'answer';
+/** «¿Terminamos la reunión?», «lo dejamos aquí»: they want to close it. */
+const ENDS =
+  /((terminar|terminamos|acabar|acabamos|cerrar|cerramos|finalizar|finalizamos)\b.{0,20}reuni[oó]n|^\s*¿?\s*(terminamos|acabamos|cerramos|lo dejamos aqu[ií]|eso es todo)(?![\p{L}]).{0,30}$)/iu;
+
+type Tone = 'complaint' | 'ends' | 'handoff' | 'confused' | 'unsure' | 'agrees' | 'answer';
 /** How the owner's last words land: a complaint and a doubt come before anything else. */
 export function toneOf(text: string): Tone {
   if (COMPLAINT.test(text) || shouting(text)) return 'complaint';
+  if (ENDS.test(text)) return 'ends';
   if (HANDOFF.test(text)) return 'handoff';
   if (CONFUSED.test(text) || QUESTION.test(text)) return 'confused';
   if (UNSURE.test(text)) return 'unsure';
@@ -412,6 +499,8 @@ function afterOwner(m: Meeting, task: string | null): string {
         'Tu turno, SIN NINGUNA PREGUNTA: «Perdona» (sin justificarte), repite en una frase y con sus palabras lo que pidió, y di qué hacéis ahora con ello. Lo que ya ha zanjado no se vuelve a nombrar.',
       ].join(' ');
     }
+    case 'ends':
+      return `Quiere terminar la reunión. Tu turno, SIN NINGUNA PREGUNTA: despídete en una o dos frases con el siguiente paso concreto del equipo. La reunión se cierra al terminar tú.`;
     case 'handoff':
       return [
         `Dice que eso lo lleva él o que lo hablará él directamente («${turn.slice(0, 200)}»).${before}`,
@@ -542,7 +631,7 @@ function closedTopics(m: Meeting): string[] {
  */
 function unasked(m: Meeting, said: string, ordered: boolean): string {
   const tone = toneOf(ownerTurn(m));
-  const none = ordered || tone === 'complaint' || tone === 'handoff';
+  const none = ordered || tone === 'complaint' || tone === 'handoff' || tone === 'ends';
   const closed = closedTopics(m);
   return said
     .split(/(?<=[.!?])\s+/)
@@ -563,6 +652,7 @@ async function answer(m: Meeting, publish: () => void): Promise<void> {
   busy = true;
   try {
     const opening = !m.lines.length;
+    const ending = !opening && toneOf(ownerTurn(m)) === 'ends';
     const { order, notes, web, task } = opening ? { order: byRank(m).slice(0, 1), notes: [], web: '', task: null } : await listen(m, publish);
     // Only one line per turn; if the one who answers comes back empty-handed, the next takes it.
     let said = false;
@@ -586,6 +676,8 @@ async function answer(m: Meeting, publish: () => void): Promise<void> {
       publish();
     }
     m.waitingFor = 'owner';
+    // You asked to finish: once they've said goodbye, the minutes get written.
+    if (ending && m.status === 'live') m.status = 'closing';
   } catch (e) {
     const msg = redact(e instanceof Error ? e.message : String(e));
     console.error(`[reunión] ${msg}`);
@@ -645,7 +737,7 @@ async function close(m: Meeting, publish: () => void, canThink: boolean): Promis
         for (const [id, v] of Object.entries(dossier)) {
           const had = new Set(roots(st.brief.aspects[id as BriefAspect]?.text ?? ''));
           const added = roots(typeof v?.texto === 'string' ? v.texto : '').filter((r) => !had.has(r));
-          if (added.length && added.filter((r) => said.has(r)).length / added.length < 0.5) continue;
+          if (added.length && added.filter((r) => said.has(r)).length / added.length < 0.34) continue;
           noteBrief({ aspecto: id, texto: v?.texto, certeza: v?.certeza });
         }
         m.summary = typeof json?.acta === 'string' ? json.acta.trim().slice(0, 1200) : tidy(out.text, lead.name).slice(0, 1200) || null;

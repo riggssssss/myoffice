@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import type { Look } from '../sim/look';
-import { ROLES } from '../sim/seed';
+import { ROLES, VISUAL_ROLES } from '../sim/seed';
 import type { Activity, Worker } from '../sim/types';
 import { route, type Point, type Pose, type Spot } from './navigation';
 import { grainMap, twillMap } from './textures';
@@ -797,7 +797,7 @@ export class Avatar {
           p.headX = -0.04;
           p.mood = 'neutral';
           p.look = -0.7;
-        } else if (role === 'design') {
+        } else if (VISUAL_ROLES.has(role)) {
           p.armRX = -0.55;
           p.elbowR = -1.0;
           p.armRZ = -0.15 + Math.sin(t * 2.2) * 0.1;

@@ -35,7 +35,8 @@ export interface Picture {
 /** Whether a model takes pictures: every Claude, and the vision models elsewhere. */
 export function sees(b: Brain): boolean {
   if (b.provider === 'anthropic') return true;
-  return /llama-4|vision|-vl|vl-|\bvl\b|gemma-?3|pixtral|llava|minicpm-v|moondream|qwen2\.5vl|qwen3-vl|phi-4-multimodal|kimi-k2\.5/i.test(b.model);
+  // Qwen from 3.5 on and Kimi from K2.5 on see natively; older ones only in their -vl versions.
+  return /llama-4|vision|-vl|vl-|\bvl\b|gemma-?3|pixtral|llava|minicpm-v|moondream|qwen2\.5vl|qwen3-vl|qwen3\.[5-9]|qwen[4-9]|phi-4-multimodal|kimi-k2\.5|kimi-k[3-9]/i.test(b.model);
 }
 
 /** GPT-OSS sometimes leaks its channel markers into a tool's name («usar_accion<|channel|>commentary»). */

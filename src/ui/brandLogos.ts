@@ -36,6 +36,7 @@ import {
   siBluesky,
   siMedium,
   siSubstack,
+  siCloudflare,
 } from 'simple-icons';
 import { config } from './config';
 import { icon } from './icons';
@@ -97,6 +98,7 @@ const BY_NAME: [RegExp, Mark][] = [
   [/medium/i, siMedium],
   [/substack/i, siSubstack],
   [/canva/i, { letter: 'C', hex: '00C4CC' }],
+  [/cloudflare/i, siCloudflare],
 ];
 
 /** A connector's logo tile: its template's, else a brand its name mentions, else the MCP mark. */

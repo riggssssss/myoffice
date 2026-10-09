@@ -1,8 +1,8 @@
 import { CHAIR_MODELS, chairStyle, corners, deskBySlot, DOOR_W, ENTRANCE, entranceItem, KINDS, layoutGeometry, layoutItems, layoutRevision, layoutRooms, onLine, toWorld, WALL_T, wallOf, type ChairPack, type Item, type P } from '../sim/layout';
-import { DIRECTOR_SLOT } from '../sim/seed';
+import { DIRECTOR_SLOT, MEETING_SEATS } from '../sim/seed';
 import type { Activity, Worker } from '../sim/types';
 
-export const MEETING_SEATS = 6;
+export { MEETING_SEATS };
 export const MEETING_RADIUS = 1.45;
 
 export type Pose = 'seat' | 'stool' | 'stand';
